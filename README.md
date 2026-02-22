@@ -2,6 +2,10 @@
 
 A desktop app that updates your **Discord Rich Presence** when you're online on Insignia (xb.live). It shows what game you're playing and keeps the xb.live dashboard in sync with your status.
 
+NOT OFFICIALLY SUPPORTED BY INSIGNIA.
+
+When logging into the App, Make sure Discord is open on your computer. Additionally, use your exsisting insignia login that you would use on the insignia.live website.
+
 ## Features
 
 - **Discord Rich Presence** – When you're online on Insignia, Discord shows your current game and "Online as [username]".
