@@ -9,6 +9,11 @@ NOT OFFICIALLY SUPPORTED BY INSIGNIA.
 
 **DOWNLOAD THE PRECOMPILED VERSION IN THE RELEASE PANEL ---->>>>**
 
+<img width="621" height="809" alt="Screenshot 2026-02-22 at 5 13 19 PM" src="https://github.com/user-attachments/assets/4ddf0ade-b448-4fe4-b597-fe91a894bba9" />
+
+<img width="277" height="204" alt="Screenshot 2026-02-22 at 5 13 37 PM" src="https://github.com/user-attachments/assets/60895380-6ebf-42c4-b71c-f7710f50e8e2" />
+
+
 ## Features
 
 - **Discord Rich Presence** – When you're online on Insignia, Discord shows your current game and "Online as [username]".
