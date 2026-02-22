@@ -63,6 +63,13 @@ Icons are generated from `icon.png` in the project root before each build.
   `npm run generate-icons`  
   → Updates `assets/icon.ico` and `assets/icon.icns` from `icon.png`.
 
+### macOS: “App is corrupted” or “damaged” when copying from the DMG
+
+The built Mac app is **unsigned** (no Apple Developer ID), so Gatekeeper may show “damaged” or “corrupted” when you copy it to Applications and try to open it. The app itself is fine.
+
+- **Workaround:** After copying to Applications, **right‑click the app → Open** (first launch only), or in Terminal run:  
+  `xattr -cr "/Applications/XBL Beacon.app"`
+  
 ## How it works
 
 1. You log in to **Discord** and **xb.live** in the app.
