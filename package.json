@@ -1,0 +1,86 @@
+{
+  "name": "xblbeacon",
+  "version": "1.0.0",
+  "description": "Desktop app for Discord presence when playing on xb.live (Insignia)",
+  "main": "main.js",
+  "scripts": {
+    "start": "electron .",
+    "build": "node scripts/generate-icons.js && electron-builder",
+    "build:mac": "node scripts/generate-icons.js && electron-builder --mac",
+    "build:win": "node scripts/generate-icons.js && electron-builder --win --x64",
+    "build:win32": "node scripts/generate-icons.js && electron-builder --win --ia32",
+    "build:win-all": "node scripts/generate-icons.js && electron-builder --win --x64 --ia32",
+    "dev": "electron . --dev",
+    "generate-icons": "node scripts/generate-icons.js"
+  },
+  "keywords": [
+    "discord",
+    "xb.live",
+    "presence",
+    "desktop"
+  ],
+  "author": "",
+  "license": "ISC",
+  "dependencies": {
+    "discord-rpc": "^4.0.1",
+    "electron-store": "^8.1.0"
+  },
+  "devDependencies": {
+    "electron": "22.3.27",
+    "electron-builder": "^24.6.4",
+    "sharp": "^0.33.5",
+    "to-ico": "^1.1.5"
+  },
+  "build": {
+    "appId": "com.xbl.beacon",
+    "productName": "XBL Beacon",
+    "directories": {
+      "output": "dist",
+      "buildResources": "build"
+    },
+    "files": [
+      "main.js",
+      "preload.js",
+      "renderer.js",
+      "index.html",
+      "icon.png",
+      "assets/**/*",
+      "node_modules/discord-rpc/**/*",
+      "node_modules/electron-store/**/*"
+    ],
+    "extraFiles": [
+      "installer.nsh"
+    ],
+    "mac": {
+      "category": "public.app-category.utilities",
+      "target": "dmg",
+      "icon": "assets/icon.icns"
+    },
+    "win": {
+      "target": "nsis",
+      "requestedExecutionLevel": "asInvoker",
+      "icon": "assets/icon.ico"
+    },
+    "nsis": {
+      "oneClick": false,
+      "allowToChangeInstallationDirectory": true,
+      "allowElevation": false,
+      "createDesktopShortcut": true,
+      "createStartMenuShortcut": true,
+      "shortcutName": "XBL Beacon",
+      "include": "installer.nsh",
+      "deleteAppDataOnUninstall": false,
+      "runAfterFinish": true,
+      "menuCategory": false,
+      "artifactName": "${productName}-Setup-${version}.${ext}",
+      "differentialPackage": false,
+      "warningsAsErrors": false,
+      "packElevateHelper": false,
+      "guid": "com.xbl.beacon",
+      "perMachine": false
+    },
+    "linux": {
+      "target": "AppImage"
+    }
+  }
+}
