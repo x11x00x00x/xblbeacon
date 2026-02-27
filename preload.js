@@ -24,6 +24,7 @@ contextBridge.exposeInMainWorld('electronAPI', {
     
     // Register with xbl.live for play-time tracking
     registerWithXbl: (sessionKey) => ipcRenderer.invoke('register-with-xbl', sessionKey),
+    getPlayTime: () => ipcRenderer.invoke('get-play-time'),
     
     // Updates
     getAppVersion: () => ipcRenderer.invoke('get-app-version'),

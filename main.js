@@ -86,8 +86,8 @@ const store = new Store();
 const DISCORD_CLIENT_ID = '1451762829303742555';
 const AUTH_API_URL = process.env.AUTH_API_URL || 'https://auth.insigniastats.live/api';
 const XBL_SITE_URL = process.env.XBL_SITE_URL || 'https://xb.live';
-const CHECK_INTERVAL_ACTIVE = 180000;   // 3 min when user is online
-const CHECK_INTERVAL_IDLE = 360000;     // 6 min when user is offline
+const CHECK_INTERVAL_ACTIVE = 120000;   // 2 min when user is online
+const CHECK_INTERVAL_IDLE = 300000;     // 5 min when user is offline
 const UPDATE_CHECK_INTERVAL = 86400000; // 24 h
 // Update/status go to the same site backend as the rest of the app (e.g. xb.live/api/...)
 const UPDATE_SERVER_URL = process.env.UPDATE_SERVER_URL || XBL_SITE_URL;
@@ -102,7 +102,7 @@ let checkingActive = false;
 // Only send to renderer when window is visible (saves CPU when minimized to tray)
 function sendToRenderer(channel, ...args) {
     if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
-        sendToRenderer(channel, ...args);
+        mainWindow.webContents.send(channel, ...args);
     }
 }
 
@@ -131,26 +131,19 @@ function createWindow() {
         }
         
         if (fs.existsSync(iconPath)) {
-            // Try loading as buffer first (more reliable)
-            try {
-                const iconBuffer = fs.readFileSync(iconPath);
-                windowIcon = nativeImage.createFromBuffer(iconBuffer);
-            } catch (e) {
-                // Fallback to path method
-                windowIcon = nativeImage.createFromPath(iconPath);
+            // Prefer path (no buffer copy in memory); fall back to buffer if empty
+            windowIcon = nativeImage.createFromPath(iconPath);
+            if (windowIcon.isEmpty()) {
+                try {
+                    const iconBuffer = fs.readFileSync(iconPath);
+                    windowIcon = nativeImage.createFromBuffer(iconBuffer);
+                } catch (e) {
+                    windowIcon = nativeImage.createFromPath(iconPath);
+                }
             }
-            
-            // If still empty, try root icon.png as fallback
             if (windowIcon.isEmpty() && iconPath !== path.join(__dirname, 'icon.png')) {
                 const rootIcon = path.join(__dirname, 'icon.png');
-                if (fs.existsSync(rootIcon)) {
-                    try {
-                        const rootBuffer = fs.readFileSync(rootIcon);
-                        windowIcon = nativeImage.createFromBuffer(rootBuffer);
-                    } catch (e) {
-                        windowIcon = nativeImage.createFromPath(rootIcon);
-                    }
-                }
+                if (fs.existsSync(rootIcon)) windowIcon = nativeImage.createFromPath(rootIcon);
             }
             
             if (!windowIcon.isEmpty()) {
@@ -168,6 +161,7 @@ function createWindow() {
     mainWindow = new BrowserWindow({
         width: 500,
         height: 600,
+        show: false,
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
@@ -179,6 +173,7 @@ function createWindow() {
         autoHideMenuBar: true
     });
 
+    mainWindow.once('ready-to-show', () => { mainWindow.show(); });
     mainWindow.loadFile('index.html');
 
     // When user reopens window, push current state so UI is up to date (no extra polling)
@@ -192,6 +187,10 @@ function createWindow() {
             });
         } else {
             sendToRenderer('presence-updated', { active: false });
+        }
+        if (store.get('insigniaUser')) {
+            const totalMinutes = store.get('totalPlayTimeMinutes', 0);
+            sendToRenderer('play-time-updated', { totalMinutes });
         }
     });
 
@@ -481,6 +480,28 @@ ipcMain.handle('clear-discord-presence', async () => {
     }
 });
 
+// Get total play time from xb.live (same API as Insignia stats server: GET /api/me/play-time)
+async function getPlayTime(username, sessionKey) {
+    if (!username) return { totalMinutes: 0, byGame: {}, lastState: 'offline', currentGame: null };
+    try {
+        const url = `${XBL_SITE_URL}/api/me/play-time?username=${encodeURIComponent(username)}`;
+        const opts = { method: 'GET' };
+        if (sessionKey) opts.headers = { 'X-Session-Key': sessionKey };
+        const res = await nodeFetch(url, opts);
+        if (!res.ok) return { totalMinutes: 0, byGame: {}, lastState: 'offline', currentGame: null };
+        const data = res.json || {};
+        return {
+            totalMinutes: data.totalMinutes || 0,
+            byGame: data.byGame || {},
+            lastState: data.lastState || 'offline',
+            currentGame: data.currentGame || null
+        };
+    } catch (e) {
+        logWarn('play-time fetch failed:', e.message);
+        return { totalMinutes: 0, byGame: {}, lastState: 'offline', currentGame: null };
+    }
+}
+
 // Get presence from xb.live server (server calls auth refresh - same path as cron, so we get same result)
 async function getPresenceFromAuth(sessionKey) {
     try {
@@ -538,6 +559,11 @@ async function checkAndUpdatePresence() {
         if (isOnline) {
             const shouldSetNewTimestamp = !wasOnline;
             await updatePresence(username, gameName, shouldSetNewTimestamp);
+            // Fetch play time in background so we don't delay scheduling the next check
+            getPlayTime(username, insigniaSession).then((playTime) => {
+                store.set('totalPlayTimeMinutes', playTime.totalMinutes);
+                sendToRenderer('play-time-updated', { totalMinutes: playTime.totalMinutes });
+            }).catch(() => {});
         } else {
             if (mainWindow) {
                 sendToRenderer('presence-updated', {
@@ -548,6 +574,7 @@ async function checkAndUpdatePresence() {
             }
             await clearPresence(true);
         }
+
         scheduleNextCheck();
     } catch (error) {
         console.error('Error checking presence:', error);
@@ -780,6 +807,19 @@ ipcMain.handle('get-app-version', () => currentVersion);
 ipcMain.handle('check-for-updates', () => checkForUpdates());
 ipcMain.handle('download-and-install-update', (event, { url, sha256 }) => downloadAndInstallUpdate(url, sha256));
 
+ipcMain.handle('get-play-time', async () => {
+    const insigniaUser = store.get('insigniaUser');
+    const insigniaSession = store.get('insigniaSession');
+    if (!insigniaUser || !insigniaUser.username) return { totalMinutes: 0, byGame: {} };
+    // Only call the API when user is online; otherwise return cached value
+    if (!store.get('presenceActive', false)) {
+        return { totalMinutes: store.get('totalPlayTimeMinutes', 0), byGame: {} };
+    }
+    const data = await getPlayTime(insigniaUser.username, insigniaSession);
+    store.set('totalPlayTimeMinutes', data.totalMinutes);
+    return { totalMinutes: data.totalMinutes, byGame: {} };
+});
+
 // Start checking if both logins exist; schedule update check and report status
 app.whenReady().then(() => {
     const discordUser = store.get('discordUser');
@@ -791,12 +831,20 @@ app.whenReady().then(() => {
             startChecking();
         }, 2000);
     }
-    // Single deferred run: update check + status (reduces timers and startup contention)
+    // Single deferred run: update check + status + one-time play time on start (if logged in)
     setTimeout(() => {
         checkForUpdates().then(result => {
             if (result.updateAvailable) notifyUserUpdateAvailable(result);
         });
         reportStatus();
+        const insigniaUser = store.get('insigniaUser');
+        const insigniaSession = store.get('insigniaSession');
+        if (insigniaUser && insigniaUser.username && insigniaSession) {
+            getPlayTime(insigniaUser.username, insigniaSession).then((playTime) => {
+                store.set('totalPlayTimeMinutes', playTime.totalMinutes);
+                sendToRenderer('play-time-updated', { totalMinutes: playTime.totalMinutes });
+            }).catch(() => {});
+        }
     }, 8000);
     scheduleUpdateCheck();
 });

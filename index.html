@@ -66,7 +66,10 @@
 
         .status-indicator.connected {
             background: #4ade80;
-            animation: pulse 2s infinite;
+            animation: pulse 3s ease-in-out infinite;
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .status-indicator.connected { animation: none; }
         }
 
         .status-indicator.disconnected {
@@ -257,6 +260,7 @@
             <div class="presence-status inactive" id="presenceStatus">
                 <div>Status: <strong id="presenceText">Not active</strong></div>
                 <div style="margin-top: 5px; font-size: 11px;" id="presenceDetails"></div>
+                <div style="margin-top: 5px; font-size: 11px; color: #aaa;" id="totalTimePlayed"></div>
                 <div style="margin-top: 5px; font-size: 10px; color: #888;" id="debugInfo"></div>
             </div>
             <div class="info" style="margin-top: 10px;">

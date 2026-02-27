@@ -25,8 +25,26 @@ const insigniaError = document.getElementById('insigniaError');
 const presenceStatus = document.getElementById('presenceStatus');
 const presenceText = document.getElementById('presenceText');
 const presenceDetails = document.getElementById('presenceDetails');
+const totalTimePlayedEl = document.getElementById('totalTimePlayed');
 
 const autoStartCheckbox = document.getElementById('autoStartCheckbox');
+
+function formatPlayTime(totalMinutes) {
+    if (totalMinutes == null) return 'Total time played: —';
+    const total = Number(totalMinutes);
+    const h = Math.floor(total / 60);
+    const m = Math.round(total % 60);
+    if (h > 0 && m > 0) return `Total time played: ${h}h ${m}m`;
+    if (h > 0) return `Total time played: ${h}h`;
+    return `Total time played: ${m}m`;
+}
+
+function setTotalTimePlayed(totalMinutes) {
+    if (!totalTimePlayedEl) return;
+    totalTimePlayedEl.textContent = formatPlayTime(totalMinutes);
+    // Show row whenever we have a value (including 0); hide only when explicitly cleared (not logged in)
+    totalTimePlayedEl.style.display = totalMinutes != null ? '' : 'none';
+}
 
 // Discord RPC is handled in main process
 async function initDiscordRPC() {
@@ -68,6 +86,18 @@ async function loadState() {
 
     // Update auto-start checkbox
     autoStartCheckbox.checked = autoStart;
+
+    // Total time played (fetch when logged in to xb.live)
+    if (insigniaSession && insigniaUser) {
+        if (electronAPI.getPlayTime) {
+            electronAPI.getPlayTime().then(({ totalMinutes }) => setTotalTimePlayed(totalMinutes)).catch(() => setTotalTimePlayed(null));
+        } else {
+            const cached = await electronAPI.getStoreValue('totalPlayTimeMinutes');
+            setTotalTimePlayed(cached);
+        }
+    } else {
+        setTotalTimePlayed(null);
+    }
 }
 
 function updateDiscordStatus(connected, user = null) {
@@ -126,12 +156,8 @@ function updatePresenceStatus(active, lastCheck = null, gameName = null, lastChe
         } else {
             presenceDetails.textContent = 'When you\'re online on Insignia, Discord will show what you\'re playing. Checking every 2 minutes.';
         }
-        loadState().then(() => {
-            electronAPI.getStoreValue('insigniaUser').then(user => {
-                if (user && user.username) {
-                    debugInfo.textContent = `Logged in as: ${user.username}`;
-                }
-            });
+        electronAPI.getStoreValue('insigniaUser').then(user => {
+            if (user && user.username) debugInfo.textContent = `Logged in as: ${user.username}`;
         });
     }
 }
@@ -377,6 +403,9 @@ downloadUpdateBtn.addEventListener('click', async () => {
 if (typeof electronAPI !== 'undefined' && electronAPI.onMessage) {
     electronAPI.onMessage('update-available', (info) => {
         if (info && info.updateAvailable && info.url) showPendingUpdate(info);
+    });
+    electronAPI.onMessage('play-time-updated', (data) => {
+        if (data && typeof data.totalMinutes === 'number') setTotalTimePlayed(data.totalMinutes);
     });
 }
 
