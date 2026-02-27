@@ -308,6 +308,79 @@ if (typeof electronAPI !== 'undefined' && electronAPI.onMessage) {
     });
 }
 
+// --- Updates ---
+const appVersionEl = document.getElementById('appVersion');
+const checkUpdateBtn = document.getElementById('checkUpdateBtn');
+const updateStatusEl = document.getElementById('updateStatus');
+const updateAvailableEl = document.getElementById('updateAvailable');
+const downloadUpdateBtn = document.getElementById('downloadUpdateBtn');
+let pendingUpdate = null;
+
+async function refreshVersion() {
+    if (typeof electronAPI !== 'undefined' && electronAPI.getAppVersion) {
+        const v = await electronAPI.getAppVersion();
+        if (appVersionEl) appVersionEl.textContent = v || '—';
+    }
+}
+
+function showUpdateStatus(text, isError) {
+    if (!updateStatusEl) return;
+    updateStatusEl.style.display = 'block';
+    updateStatusEl.textContent = text;
+    updateStatusEl.className = isError ? 'error' : 'info';
+}
+
+function showPendingUpdate(info) {
+    pendingUpdate = info;
+    if (updateAvailableEl) updateAvailableEl.style.display = 'block';
+    if (updateStatusEl) {
+        updateStatusEl.style.display = 'block';
+        updateStatusEl.textContent = `Update ${info.version} available. ${info.notes || ''}`;
+        updateStatusEl.className = 'success';
+    }
+}
+
+checkUpdateBtn.addEventListener('click', async () => {
+    if (!electronAPI.checkForUpdates) return;
+    checkUpdateBtn.disabled = true;
+    updateAvailableEl.style.display = 'none';
+    showUpdateStatus('Checking for updates…', false);
+    try {
+        const result = await electronAPI.checkForUpdates();
+        if (result.updateAvailable && result.url) {
+            showPendingUpdate(result);
+        } else if (result.error) {
+            showUpdateStatus('Update check failed: ' + result.error, true);
+        } else {
+            showUpdateStatus('You’re on the latest version.', false);
+        }
+    } catch (e) {
+        showUpdateStatus('Update check failed.', true);
+    } finally {
+        checkUpdateBtn.disabled = false;
+    }
+});
+
+downloadUpdateBtn.addEventListener('click', async () => {
+    if (!pendingUpdate || !electronAPI.downloadAndInstallUpdate) return;
+    downloadUpdateBtn.disabled = true;
+    try {
+        await electronAPI.downloadAndInstallUpdate({ url: pendingUpdate.url, sha256: pendingUpdate.sha256 });
+        showUpdateStatus('Download started. Install the update and restart the app.', false);
+    } catch (e) {
+        showUpdateStatus('Download failed: ' + (e.message || 'Unknown error'), true);
+    } finally {
+        downloadUpdateBtn.disabled = false;
+    }
+});
+
+if (typeof electronAPI !== 'undefined' && electronAPI.onMessage) {
+    electronAPI.onMessage('update-available', (info) => {
+        if (info && info.updateAvailable && info.url) showPendingUpdate(info);
+    });
+}
+
 // Initialize
+refreshVersion();
 loadState();
 

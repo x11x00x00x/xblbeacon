@@ -25,6 +25,11 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Register with xbl.live for play-time tracking
     registerWithXbl: (sessionKey) => ipcRenderer.invoke('register-with-xbl', sessionKey),
     
+    // Updates
+    getAppVersion: () => ipcRenderer.invoke('get-app-version'),
+    checkForUpdates: () => ipcRenderer.invoke('check-for-updates'),
+    downloadAndInstallUpdate: (opts) => ipcRenderer.invoke('download-and-install-update', opts),
+    
     // Listen for messages from main process
     onMessage: (channel, callback) => {
         ipcRenderer.on(channel, (event, ...args) => callback(...args));

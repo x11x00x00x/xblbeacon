@@ -1,8 +1,19 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, shell, Notification } = require('electron');
 const path = require('path');
+const fs = require('fs');
+const crypto = require('crypto');
 const https = require('https');
+const http = require('http');
 const Store = require('electron-store');
 const { Client } = require('discord-rpc');
+
+const DEBUG = process.env.DEBUG === '1' || process.env.NODE_ENV === 'development';
+function log(...args) { if (DEBUG) console.log(...args); }
+function logWarn(...args) { if (DEBUG) console.warn(...args); }
+
+// Keep-alive agents for connection reuse (fewer sockets, less CPU)
+const httpsAgent = new https.Agent({ keepAlive: true, maxSockets: 2 });
+const httpAgent = new http.Agent({ keepAlive: true, maxSockets: 2 });
 
 // Node fetch (main process has no global fetch in Electron 22)
 function nodeFetch(url, options = {}) {
@@ -14,6 +25,7 @@ function nodeFetch(url, options = {}) {
             port: u.port || 443,
             path: u.pathname + u.search,
             method: options.method || 'GET',
+            agent: httpsAgent,
             headers: {
                 'Content-Type': 'application/json',
                 ...(options.headers || {}),
@@ -37,18 +49,62 @@ function nodeFetch(url, options = {}) {
     });
 }
 
+// Fetch for update server (supports http or https, reuses connections)
+function updateServerFetch(url, options = {}) {
+    return new Promise((resolve, reject) => {
+        const u = new URL(url);
+        const mod = u.protocol === 'https:' ? https : http;
+        const agent = u.protocol === 'https:' ? httpsAgent : httpAgent;
+        const body = options.body ? Buffer.from(options.body, 'utf8') : null;
+        const req = mod.request({
+            hostname: u.hostname,
+            port: u.port || (u.protocol === 'https:' ? 443 : 80),
+            path: u.pathname + u.search,
+            method: options.method || 'GET',
+            agent,
+            headers: { 'Content-Type': 'application/json', ...(options.headers || {}), ...(body ? { 'Content-Length': body.length } : {}) }
+        }, (res) => {
+            let data = '';
+            res.on('data', chunk => { data += chunk; });
+            res.on('end', () => {
+                try {
+                    const json = data ? JSON.parse(data) : {};
+                    resolve({ ok: res.statusCode >= 200 && res.statusCode < 300, status: res.statusCode, json });
+                } catch (e) {
+                    resolve({ ok: false, status: res.statusCode, json: {} });
+                }
+            });
+        });
+        req.on('error', reject);
+        if (body) req.write(body);
+        req.end();
+    });
+}
+
 const store = new Store();
 
 const DISCORD_CLIENT_ID = '1451762829303742555';
 const AUTH_API_URL = process.env.AUTH_API_URL || 'https://auth.insigniastats.live/api';
 const XBL_SITE_URL = process.env.XBL_SITE_URL || 'https://xb.live';
-const CHECK_INTERVAL = 120000; // 2 minutes
+const CHECK_INTERVAL_ACTIVE = 180000;   // 3 min when user is online
+const CHECK_INTERVAL_IDLE = 360000;     // 6 min when user is offline
+const UPDATE_CHECK_INTERVAL = 86400000; // 24 h
+// Update/status go to the same site backend as the rest of the app (e.g. xb.live/api/...)
+const UPDATE_SERVER_URL = process.env.UPDATE_SERVER_URL || XBL_SITE_URL;
 
 let mainWindow = null;
 let tray = null;
 let isQuitting = false;
 let discordRPC = null;
-let checkInterval = null;
+let checkTimeout = null;
+let checkingActive = false;
+
+// Only send to renderer when window is visible (saves CPU when minimized to tray)
+function sendToRenderer(channel, ...args) {
+    if (mainWindow && !mainWindow.isDestroyed() && mainWindow.isVisible()) {
+        sendToRenderer(channel, ...args);
+    }
+}
 
 // Create main window
 function createWindow() {
@@ -98,17 +154,15 @@ function createWindow() {
             }
             
             if (!windowIcon.isEmpty()) {
-                const size = windowIcon.getSize();
-                console.log(`✓ Loaded window icon from: ${iconPath}`);
-                console.log(`  Window icon size: ${size.width}x${size.height}`);
+                log('Loaded window icon from:', iconPath);
             } else {
-                console.warn('Window icon is empty after loading');
+                logWarn('Window icon is empty after loading');
             }
         } else {
-            console.warn(`Window icon not found at: ${iconPath}`);
+            logWarn('Window icon not found at:', iconPath);
         }
     } catch (error) {
-        console.warn('Error loading window icon:', error.message);
+        logWarn('Error loading window icon:', error.message);
     }
     
     mainWindow = new BrowserWindow({
@@ -117,7 +171,8 @@ function createWindow() {
         webPreferences: {
             nodeIntegration: false,
             contextIsolation: true,
-            preload: path.join(__dirname, 'preload.js')
+            preload: path.join(__dirname, 'preload.js'),
+            backgroundThrottling: true
         },
         icon: windowIcon && !windowIcon.isEmpty() ? windowIcon : undefined,
         title: 'XBL Beacon',
@@ -125,6 +180,20 @@ function createWindow() {
     });
 
     mainWindow.loadFile('index.html');
+
+    // When user reopens window, push current state so UI is up to date (no extra polling)
+    mainWindow.on('show', () => {
+        const active = store.get('presenceActive', false);
+        if (active) {
+            sendToRenderer('presence-updated', {
+                active: true,
+                lastCheck: store.get('lastCheck'),
+                gameName: store.get('lastGameName')
+            });
+        } else {
+            sendToRenderer('presence-updated', { active: false });
+        }
+    });
 
     // Handle window close
     mainWindow.on('close', (event) => {
@@ -156,29 +225,17 @@ function createTray() {
             iconPath = path.join(__dirname, 'assets', 'icon.png');
         }
         
-        console.log(`Attempting to load tray icon from: ${iconPath}`);
-        console.log(`  Full path: ${path.resolve(iconPath)}`);
-        console.log(`  File exists: ${fs.existsSync(iconPath)}`);
-        
         if (fs.existsSync(iconPath)) {
-            // Load icon using createFromPath (most reliable method)
             icon = nativeImage.createFromPath(iconPath);
-            
-            // If path method fails, try buffer method as fallback
             if (icon.isEmpty()) {
-                console.log('Path method failed, trying buffer method...');
                 const iconBuffer = fs.readFileSync(iconPath);
                 icon = nativeImage.createFromBuffer(iconBuffer);
             }
-            
             if (icon.isEmpty()) {
-                console.warn(`Icon at ${iconPath} is empty after loading`);
+                logWarn('Icon at', iconPath, 'is empty');
                 throw new Error('Icon is empty');
             }
-            
-            const iconSize = icon.getSize();
-            console.log(`✓ Successfully loaded tray icon from: ${iconPath}`);
-            console.log(`  Icon size: ${iconSize.width}x${iconSize.height}`);
+            log('Loaded tray icon from:', iconPath);
             
             // Don't use template mode - it causes black icons
             // Template mode is only for monochrome icons with alpha channel
@@ -199,24 +256,14 @@ function createTray() {
         let trayIcon = icon;
         
         // macOS can handle larger icons, but very large ones might cause issues
-        // Resize only if larger than 64x64
         if (iconSize.width > 64 || iconSize.height > 64) {
             const size = process.platform === 'darwin' ? 22 : 16;
             trayIcon = icon.resize({ width: size, height: size });
-            
-            if (trayIcon.isEmpty()) {
-                console.warn('Resized icon is empty, using original size');
-                trayIcon = icon;
-            }
-            console.log(`Resized icon from ${iconSize.width}x${iconSize.height} to ${size}x${size}`);
-        } else {
-            console.log(`Using icon at native size: ${iconSize.width}x${iconSize.height}`);
+            if (trayIcon.isEmpty()) trayIcon = icon;
         }
-        
         tray = new Tray(trayIcon);
-        console.log(`✓ Created tray with icon`);
     } else {
-        console.warn('Tray icon is empty, tray may show default system icon');
+        logWarn('Tray icon empty, using default');
         const emptyIcon = nativeImage.createEmpty();
         tray = new Tray(emptyIcon);
     }
@@ -267,19 +314,13 @@ app.whenReady().then(() => {
         if (fs.existsSync(iconPath)) {
             try {
                 const dockIcon = nativeImage.createFromPath(iconPath);
-                if (!dockIcon.isEmpty()) {
-                    // Don't set as template - use the icon as-is
-                    app.dock.setIcon(dockIcon);
-                    const size = dockIcon.getSize();
-                    console.log(`✓ Set macOS dock icon from ${iconPath} (${size.width}x${size.height})`);
-                } else {
-                    console.warn('Dock icon is empty after loading');
-                }
+                if (!dockIcon.isEmpty()) app.dock.setIcon(dockIcon);
+                else logWarn('Dock icon empty');
             } catch (error) {
-                console.warn('Could not set dock icon:', error.message);
+                logWarn('Could not set dock icon:', error.message);
             }
         } else {
-            console.warn(`Dock icon not found at: ${iconPath}`);
+            logWarn('Dock icon not found:', iconPath);
         }
     }
     
@@ -448,13 +489,13 @@ async function getPresenceFromAuth(sessionKey) {
             body: JSON.stringify({ sessionKey })
         });
         if (!res.ok) {
-            console.warn(`profile-live returned ${res.status}`, (res.json && res.json.error) || '');
+            logWarn('profile-live returned', res.status, (res.json && res.json.error) || '');
             return { isOnline: false, gameName: null };
         }
         const profile = res.json || {};
         const isOnline = !!profile.isOnline;
         const gameName = (profile.game && String(profile.game).trim()) ? String(profile.game).trim() : null;
-        console.log(`profile-live OK -> online=${isOnline}, game=${gameName || 'none'}`);
+        log('profile-live OK -> online=', isOnline, 'game=', gameName || 'none');
         return { isOnline, gameName };
     } catch (e) {
         console.error('profile-live failed:', e.message);
@@ -475,14 +516,14 @@ async function checkAndUpdatePresence() {
 
         const username = insigniaUser.username;
         if (!username) {
-            console.log('No username found in insigniaUser:', insigniaUser);
+            log('No username in insigniaUser:', insigniaUser);
             await clearPresence();
             return;
         }
 
-        console.log(`Checking presence for user: ${username}`);
+        log('Checking presence for', username);
         const { isOnline, gameName } = await getPresenceFromAuth(insigniaSession);
-        console.log(`User online: ${isOnline}, game: ${gameName || 'none'}`);
+        log('User online:', isOnline, 'game:', gameName || 'none');
 
         // Ping server so cron re-checks this user every run (dashboard updates within ~1–2 min)
         try {
@@ -499,7 +540,7 @@ async function checkAndUpdatePresence() {
             await updatePresence(username, gameName, shouldSetNewTimestamp);
         } else {
             if (mainWindow) {
-                mainWindow.webContents.send('presence-updated', {
+                sendToRenderer('presence-updated', {
                     active: false,
                     lastCheckResult: 'offline',
                     gameName: null
@@ -507,17 +548,28 @@ async function checkAndUpdatePresence() {
             }
             await clearPresence(true);
         }
+        scheduleNextCheck();
     } catch (error) {
         console.error('Error checking presence:', error);
         if (mainWindow) {
-            mainWindow.webContents.send('presence-updated', {
+            sendToRenderer('presence-updated', {
                 active: false,
                 lastCheckResult: 'error',
                 error: error.message
             });
         }
         await clearPresence(true);
+        scheduleNextCheck();
     }
+}
+
+function scheduleNextCheck() {
+    if (!checkingActive || checkTimeout) return;
+    const interval = store.get('presenceActive', false) ? CHECK_INTERVAL_ACTIVE : CHECK_INTERVAL_IDLE;
+    checkTimeout = setTimeout(() => {
+        checkTimeout = null;
+        if (checkingActive) checkAndUpdatePresence();
+    }, interval);
 }
 
 async function updatePresence(username, gameName, setNewTimestamp = false) {
@@ -531,9 +583,9 @@ async function updatePresence(username, gameName, setNewTimestamp = false) {
         if (setNewTimestamp || !startTimestamp) {
             startTimestamp = Date.now();
             store.set('presenceStartTimestamp', startTimestamp);
-            console.log('Setting new presence timestamp:', new Date(startTimestamp).toISOString());
+            log('Setting new presence timestamp:', new Date(startTimestamp).toISOString());
         } else {
-            console.log('Keeping existing presence timestamp:', new Date(startTimestamp).toISOString());
+            log('Keeping existing presence timestamp:', new Date(startTimestamp).toISOString());
         }
 
         const gameDisplay = gameName && gameName.trim() ? gameName.trim() : 'OG Xbox';
@@ -553,7 +605,7 @@ async function updatePresence(username, gameName, setNewTimestamp = false) {
         store.set('lastGameName', gameName);
         
         if (mainWindow) {
-            mainWindow.webContents.send('presence-updated', {
+            sendToRenderer('presence-updated', {
                 active: true,
                 lastCheck: new Date().toISOString(),
                 gameName: gameName || null
@@ -577,23 +629,22 @@ async function clearPresence(skipNotify = false) {
     store.delete('presenceStartTimestamp');
     
     if (!skipNotify && mainWindow) {
-        mainWindow.webContents.send('presence-updated', { active: false });
+        sendToRenderer('presence-updated', { active: false });
     }
 }
 
 function startChecking() {
-    if (checkInterval) {
-        clearInterval(checkInterval);
-    }
-
-    checkInterval = setInterval(checkAndUpdatePresence, CHECK_INTERVAL);
-    checkAndUpdatePresence(); // Check immediately
+    if (checkTimeout) clearTimeout(checkTimeout);
+    checkTimeout = null;
+    checkingActive = true;
+    checkAndUpdatePresence();
 }
 
 function stopChecking() {
-    if (checkInterval) {
-        clearInterval(checkInterval);
-        checkInterval = null;
+    checkingActive = false;
+    if (checkTimeout) {
+        clearTimeout(checkTimeout);
+        checkTimeout = null;
     }
     clearPresence();
 }
@@ -611,12 +662,12 @@ ipcMain.handle('register-with-xbl', async (event, sessionKey) => {
             body: JSON.stringify({ sessionKey })
         });
         if (!res.ok) {
-            console.warn('xbl.live play-time-register failed:', res.status, (res.json && res.json.error) || '');
+            logWarn('xbl.live play-time-register failed:', res.status, (res.json && res.json.error) || '');
             return { ok: false, status: res.status };
         }
         return { ok: true };
     } catch (e) {
-        console.warn('xbl.live play-time-register error:', e.message);
+        logWarn('xbl.live play-time-register error:', e.message);
         return { ok: false };
     }
 });
@@ -625,18 +676,129 @@ ipcMain.handle('stop-checking', () => {
     stopChecking();
 });
 
-// Start checking if both logins exist
+// --- Update & status (transparent: version check, download, optional status report) ---
+const currentVersion = app.getVersion();
+let updateCheckTimeout = null;
+
+async function checkForUpdates() {
+    try {
+        const base = UPDATE_SERVER_URL.replace(/\/$/, '');
+        const res = await updateServerFetch(`${base}/api/update/check?version=${encodeURIComponent(currentVersion)}&platform=${process.platform}`);
+        if (!res.ok) return { updateAvailable: false };
+        const { updateAvailable, version, url, sha256, notes } = res.json || {};
+        if (!updateAvailable || !url) return { updateAvailable: false };
+        return { updateAvailable: true, version, url, sha256: sha256 || null, notes: notes || null };
+    } catch (e) {
+        logWarn('Update check failed:', e.message);
+        return { updateAvailable: false, error: e.message };
+    }
+}
+
+function reportStatus() {
+    const base = UPDATE_SERVER_URL.replace(/\/$/, '');
+    const payload = {
+        version: currentVersion,
+        platform: process.platform,
+        arch: process.arch,
+        lastCheck: store.get('lastCheck') || null
+    };
+    updateServerFetch(`${base}/api/status`, { method: 'POST', body: JSON.stringify(payload) }).catch(() => {});
+}
+
+async function downloadAndInstallUpdate(url, expectedSha256) {
+    const tmpDir = app.getPath('temp');
+    const filename = path.basename(new URL(url).pathname) || `XBL-Beacon-${currentVersion}.dmg`;
+    const destPath = path.join(tmpDir, filename);
+    return new Promise((resolve, reject) => {
+        const mod = url.startsWith('https') ? https : http;
+        const file = fs.createWriteStream(destPath);
+        const hash = expectedSha256 ? crypto.createHash('sha256') : null;
+        mod.get(url, (res) => {
+            if (res.statusCode !== 200) {
+                fs.unlink(destPath, () => {});
+                return reject(new Error(`Download failed: ${res.statusCode}`));
+            }
+            res.pipe(file);
+            if (hash) res.on('data', chunk => hash.update(chunk));
+            file.on('finish', () => {
+                file.close(() => {
+                    if (hash && expectedSha256) {
+                        const actual = hash.digest('hex');
+                        if (actual.toLowerCase() !== expectedSha256.toLowerCase()) {
+                            fs.unlink(destPath, () => {});
+                            return reject(new Error('Hash mismatch'));
+                        }
+                    }
+                    shell.openPath(destPath).then(() => {
+                        isQuitting = true;
+                        app.quit();
+                    });
+                    resolve({ path: destPath });
+                });
+            });
+        }).on('error', (e) => {
+            fs.unlink(destPath, () => {});
+            reject(e);
+        });
+    });
+}
+
+function notifyUserUpdateAvailable(result) {
+    if (!result || !result.updateAvailable || !result.version) return;
+    if (mainWindow) {
+        mainWindow.show();
+        mainWindow.focus();
+        sendToRenderer('update-available', result);
+    }
+    if (Notification.isSupported()) {
+        const n = new Notification({
+            title: 'XBL Beacon — Update available',
+            body: `Version ${result.version} is available. Open the app to download and install.`
+        });
+        n.on('click', () => {
+            if (mainWindow) {
+                mainWindow.show();
+                mainWindow.focus();
+            }
+        });
+        n.show();
+    }
+}
+
+function scheduleUpdateCheck() {
+    if (updateCheckTimeout) clearTimeout(updateCheckTimeout);
+    updateCheckTimeout = setTimeout(() => {
+        updateCheckTimeout = null;
+        checkForUpdates().then(result => {
+            if (result.updateAvailable) notifyUserUpdateAvailable(result);
+        });
+        scheduleUpdateCheck();
+    }, UPDATE_CHECK_INTERVAL);
+}
+
+ipcMain.handle('get-app-version', () => currentVersion);
+ipcMain.handle('check-for-updates', () => checkForUpdates());
+ipcMain.handle('download-and-install-update', (event, { url, sha256 }) => downloadAndInstallUpdate(url, sha256));
+
+// Start checking if both logins exist; schedule update check and report status
 app.whenReady().then(() => {
     const discordUser = store.get('discordUser');
     const insigniaSession = store.get('insigniaSession');
     
     if (discordUser && insigniaSession) {
-        // Initialize Discord RPC if user was logged in
         setTimeout(async () => {
             await initDiscordRPC();
             startChecking();
         }, 2000);
     }
+    // Single deferred run: update check + status (reduces timers and startup contention)
+    setTimeout(() => {
+        checkForUpdates().then(result => {
+            if (result.updateAvailable) notifyUserUpdateAvailable(result);
+        });
+        reportStatus();
+    }, 8000);
+    scheduleUpdateCheck();
 });
 
 // Set up Discord RPC event handlers (shared between init methods)
@@ -649,15 +811,15 @@ function setupDiscordRPCEventHandlers() {
     discordRPC.removeAllListeners('disconnected');
     
     discordRPC.on('ready', async () => {
-        console.log('Discord RPC ready');
+        log('Discord RPC ready');
         if (mainWindow) {
-            mainWindow.webContents.send('discord-rpc-ready', discordRPC.user);
+            sendToRenderer('discord-rpc-ready', discordRPC.user);
         }
         
         // If user was online before Discord restarted, restore presence
         const wasActive = store.get('presenceActive', false);
         if (wasActive) {
-            console.log('Discord reconnected - checking if user is still online to restore presence...');
+            log('Discord reconnected - checking if user still online...');
             setTimeout(async () => {
                 const insigniaSession = store.get('insigniaSession');
                 const insigniaUser = store.get('insigniaUser');
@@ -665,10 +827,10 @@ function setupDiscordRPCEventHandlers() {
                 if (insigniaSession && insigniaUser && insigniaUser.username) {
                     const { isOnline, gameName } = await getPresenceFromAuth(insigniaSession);
                     if (isOnline) {
-                        console.log('User is still online - restoring Discord presence');
+                        log('User still online - restoring presence');
                         await updatePresence(insigniaUser.username, gameName, false);
                     } else {
-                        console.log('User is no longer online - clearing presence');
+                        log('User no longer online - clearing presence');
                         await clearPresence();
                     }
                 }
@@ -679,13 +841,13 @@ function setupDiscordRPCEventHandlers() {
     discordRPC.on('error', (error) => {
         console.error('Discord RPC error:', error);
         if (mainWindow) {
-            mainWindow.webContents.send('discord-rpc-error', error.message);
+            sendToRenderer('discord-rpc-error', error.message);
         }
     });
     
     // Handle disconnection - attempt to reconnect with retries
     discordRPC.on('disconnected', () => {
-        console.log('Discord RPC disconnected');
+        log('Discord RPC disconnected');
         // Reset discordRPC so it can reconnect
         discordRPC = null;
         
@@ -693,7 +855,7 @@ function setupDiscordRPCEventHandlers() {
         const discordUser = store.get('discordUser');
         const insigniaSession = store.get('insigniaSession');
         if (discordUser && insigniaSession) {
-            console.log('Attempting to reconnect Discord RPC...');
+            log('Attempting to reconnect Discord RPC...');
             reconnectDiscordRPC(0); // Start with attempt 0
         }
     });
@@ -713,7 +875,7 @@ async function reconnectDiscordRPC(attempt = 0) {
     // Calculate delay with exponential backoff (capped at MAX_DELAY)
     const delay = Math.min(INITIAL_DELAY * Math.pow(2, attempt), MAX_DELAY);
     
-    console.log(`Reconnecting Discord RPC (attempt ${attempt + 1}/${MAX_ATTEMPTS}) in ${delay}ms...`);
+    log('Reconnecting Discord RPC attempt', attempt + 1, '/', MAX_ATTEMPTS, 'in', delay, 'ms');
     
     setTimeout(async () => {
         try {
@@ -751,7 +913,7 @@ async function initDiscordRPC() {
         setupDiscordRPCEventHandlers();
         
         await discordRPC.login({ clientId: DISCORD_CLIENT_ID });
-        console.log('Discord RPC login successful');
+        log('Discord RPC login successful');
     } catch (error) {
         console.error('Failed to initialize Discord RPC:', error);
         discordRPC = null;

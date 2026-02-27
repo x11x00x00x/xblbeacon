@@ -2,18 +2,6 @@
 
 A desktop app that updates your **Discord Rich Presence** when you're online on Insignia (xb.live). It shows what game you're playing and keeps the xb.live dashboard in sync with your status.
 
-NOT OFFICIALLY SUPPORTED BY INSIGNIA.
-
-**When logging into the App, Make sure Discord is open on your computer. Additionally, use your exsisting insignia login that you would use on the insignia.live website.**
-
-
-**DOWNLOAD THE PRECOMPILED VERSION IN THE RELEASE PANEL ---->>>>**
-
-<img width="621" height="809" alt="Screenshot 2026-02-22 at 5 13 19 PM" src="https://github.com/user-attachments/assets/4ddf0ade-b448-4fe4-b597-fe91a894bba9" />
-
-<img width="277" height="204" alt="Screenshot 2026-02-22 at 5 13 37 PM" src="https://github.com/user-attachments/assets/60895380-6ebf-42c4-b71c-f7710f50e8e2" />
-
-
 ## Features
 
 - **Discord Rich Presence** – When you're online on Insignia, Discord shows your current game and "Online as [username]".
@@ -65,11 +53,13 @@ Icons are generated from `icon.png` in the project root before each build.
 
 ### macOS: “App is corrupted” or “damaged” when copying from the DMG
 
-The built Mac app is **unsigned** (no Apple Developer ID), so Gatekeeper may show “damaged” or “corrupted” when you copy it to Applications and try to open it. The app itself is fine.
+The built Mac app is **unsigned** (no Developer ID cert), so Gatekeeper may show “damaged” or “corrupted” when you copy it to Applications and try to open it. The app itself is fine.
 
 - **Workaround:** After copying to Applications, **right‑click the app → Open** (first launch only), or in Terminal run:  
   `xattr -cr "/Applications/XBL Beacon.app"`
-  
+
+The build is configured to **sign** the app when a **Developer ID Application** certificate is in your keychain—run `npm run build:mac` to get a signed DMG. For notarization, set `APPLE_ID`, `APPLE_APP_SPECIFIC_PASSWORD`, and `APPLE_TEAM_ID` before building. Without a certificate the build still succeeds but the app is unsigned (use the workaround above if Gatekeeper blocks it).
+
 ## How it works
 
 1. You log in to **Discord** and **xb.live** in the app.

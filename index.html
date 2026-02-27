@@ -201,6 +201,16 @@
             color: #cccccc;
             cursor: pointer;
         }
+        .update-row {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            flex-wrap: wrap;
+        }
+        .version-text {
+            font-size: 12px;
+            color: #888;
+        }
     </style>
 </head>
 <body>
@@ -263,6 +273,14 @@
             </div>
             <div class="info">
                 The application runs in the background. Close the window to minimize to system tray.
+            </div>
+            <div class="update-row" style="margin-top: 14px;">
+                <span class="version-text">Version <span id="appVersion">—</span></span>
+                <button type="button" id="checkUpdateBtn" class="secondary" style="width: auto; padding: 6px 12px; margin-top: 0;">Check for updates</button>
+            </div>
+            <div id="updateStatus" class="info" style="margin-top: 6px; display: none;"></div>
+            <div id="updateAvailable" style="display: none; margin-top: 8px;">
+                <button type="button" id="downloadUpdateBtn" style="width: auto;">Download update</button>
             </div>
         </div>
     </div>
