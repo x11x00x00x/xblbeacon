@@ -17,7 +17,6 @@ A desktop app that updates your **Discord Rich Presence** when you're online on 
   - **Quiet hours** – Only notify during time ranges you add (local time), or leave empty for all day.
   - **Poll interval** – How often the app refreshes notification-related data (1–15 minutes).
   - **Game lists** – Refresh the pick lists from the server; optional **“Only games I’ve played”** filter to narrow choices.
-- **Loading indicator** – A centered spinner and message appear while the app is busy (e.g. logging in, switching accounts, checking for updates, downloading an update, or loading game lists) so the window does not feel frozen.
 - **Updates** – **Check for updates** and **Download update** in Settings when your distribution provides an update server; the app may also notify you when a new version is available.
 - **Background running** – Runs in the system tray and checks status every 2 minutes.
 - **Auto-start** – Option to start when your computer boots.
