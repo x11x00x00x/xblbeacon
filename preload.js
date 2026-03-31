@@ -25,6 +25,16 @@ contextBridge.exposeInMainWorld('electronAPI', {
     // Register with xbl.live for play-time tracking
     registerWithXbl: (sessionKey) => ipcRenderer.invoke('register-with-xbl', sessionKey),
     getPlayTime: () => ipcRenderer.invoke('get-play-time'),
+    getPlayedGameNames: () => ipcRenderer.invoke('get-played-game-names'),
+    upsertXbAccount: (payload) => ipcRenderer.invoke('upsert-xb-account', payload),
+    getXbAccountsState: () => ipcRenderer.invoke('get-xb-accounts-state'),
+    switchXbAccount: (username) => ipcRenderer.invoke('switch-xb-account', username),
+    logoutActiveXbAccount: () => ipcRenderer.invoke('logout-active-xb-account'),
+    
+    getNotificationSettings: () => ipcRenderer.invoke('get-notification-settings'),
+    setNotificationSettings: (patch) => ipcRenderer.invoke('set-notification-settings', patch),
+    fetchOnlineUsersGameList: () => ipcRenderer.invoke('fetch-online-users-game-list'),
+    requestNotificationPermission: () => ipcRenderer.invoke('request-notification-permission'),
     
     // Updates
     getAppVersion: () => ipcRenderer.invoke('get-app-version'),

@@ -1,4 +1,4 @@
-const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, shell, Notification } = require('electron');
+const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, shell, Notification, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const crypto = require('crypto');
@@ -6,6 +6,28 @@ const https = require('https');
 const http = require('http');
 const Store = require('electron-store');
 const { Client } = require('discord-rpc');
+const { createNotificationPoller, httpsGetJson, httpsGetJsonWithHeaders } = require('./notifications');
+
+// Human-readable name in OS UI (notification banner header, menu bar, etc.)
+app.setName('XBL Beacon');
+if (process.platform === 'win32') {
+    // Avoid "electron.app.XBL.Beacon" on Windows toasts; match package.json build.appId
+    app.setAppUserModelId('com.xbl.beacon');
+}
+
+const gotSingleInstanceLock = app.requestSingleInstanceLock();
+if (!gotSingleInstanceLock) {
+    app.quit();
+    process.exit(0);
+}
+
+app.on('second-instance', () => {
+    if (mainWindow) {
+        if (mainWindow.isMinimized()) mainWindow.restore();
+        mainWindow.show();
+        mainWindow.focus();
+    }
+});
 
 const DEBUG = process.env.DEBUG === '1' || process.env.NODE_ENV === 'development';
 function log(...args) { if (DEBUG) console.log(...args); }
@@ -83,6 +105,73 @@ function updateServerFetch(url, options = {}) {
 
 const store = new Store();
 
+/** Migrate legacy single-account keys into xbAccounts + activeXbAccountUsername */
+function migrateXbAccountsLegacy() {
+    if (store.get('xbAccounts') !== undefined) return;
+    const session = store.get('insigniaSession');
+    const user = store.get('insigniaUser');
+    if (session && user && user.username) {
+        store.set('xbAccounts', [{ username: user.username, email: user.email || '', sessionKey: session }]);
+        store.set('activeXbAccountUsername', user.username);
+    } else {
+        store.set('xbAccounts', []);
+    }
+}
+
+/** Active xb.live account (session + user) or null */
+function getActiveXbAccount() {
+    migrateXbAccountsLegacy();
+    const accounts = store.get('xbAccounts', []);
+    if (!accounts.length) return null;
+    const activeUsername = store.get('activeXbAccountUsername');
+    const acc = accounts.find((a) => a.username === activeUsername) || accounts[0];
+    if (!acc || !acc.sessionKey) return null;
+    return { username: acc.username, email: acc.email || '', sessionKey: acc.sessionKey };
+}
+
+function syncLegacyInsigniaKeysFromActive() {
+    const acc = getActiveXbAccount();
+    if (acc) {
+        store.set('insigniaSession', acc.sessionKey);
+        store.set('insigniaUser', { username: acc.username, email: acc.email });
+    } else {
+        store.delete('insigniaSession');
+        store.delete('insigniaUser');
+    }
+}
+
+/** Allowed values for “minutes before event” alert; keep in sync with notifications.js UI */
+const NOTIFY_EVENT_LEAD_MINUTES = [3, 5, 10, 15, 30, 60, 90, 120];
+
+function normalizeNotifyEventMinutesBefore(raw) {
+    let n = parseInt(raw, 10);
+    if (!Number.isFinite(n)) n = 5;
+    if (NOTIFY_EVENT_LEAD_MINUTES.includes(n)) return n;
+    return NOTIFY_EVENT_LEAD_MINUTES.reduce(
+        (best, x) => (Math.abs(x - n) < Math.abs(best - n) ? x : best),
+        5
+    );
+}
+
+/** Split legacy notifyGameNames into lobby/event lists + explicit lobby toggle */
+function migrateNotificationSettingsV2() {
+    if (store.get('_notifySettingsV2')) return;
+    const legacy = store.get('notifyGameNames', []) || [];
+    if (store.get('notifyLobbyGameNames') == null) {
+        store.set('notifyLobbyGameNames', [...legacy]);
+    }
+    if (store.get('notifyEventGameNames') == null) {
+        store.set('notifyEventGameNames', [...legacy]);
+    }
+    if (store.get('notifyLobbyAlerts') == null) {
+        store.set('notifyLobbyAlerts', legacy.length > 0);
+    }
+    if (store.get('notifyEventMinutesBefore') == null) {
+        store.set('notifyEventMinutesBefore', 5);
+    }
+    store.set('_notifySettingsV2', true);
+}
+
 const DISCORD_CLIENT_ID = '1451762829303742555';
 const AUTH_API_URL = process.env.AUTH_API_URL || 'https://auth.insigniastats.live/api';
 const XBL_SITE_URL = process.env.XBL_SITE_URL || 'https://xb.live';
@@ -92,12 +181,181 @@ const UPDATE_CHECK_INTERVAL = 86400000; // 24 h
 // Update/status go to the same site backend as the rest of the app (e.g. xb.live/api/...)
 const UPDATE_SERVER_URL = process.env.UPDATE_SERVER_URL || XBL_SITE_URL;
 
+let notificationPoller = null;
+function restartNotificationPoller() {
+    migrateNotificationSettingsV2();
+    if (!notificationPoller) {
+        notificationPoller = createNotificationPoller({
+            store,
+            getSessionKey: () => getActiveXbAccount()?.sessionKey,
+            getActiveUsername: () => getActiveXbAccount()?.username || '',
+            Notification,
+            log,
+            XBL_SITE_URL,
+            AUTH_API_URL
+        });
+    }
+    notificationPoller.restart();
+}
+
+/** Windows tray: status lines mirroring Insignia Menubar popover (games + friends + Discord). */
+function friendDisplayNameForTray(f) {
+    return String(f.gamertag || f.username || f.name || '').trim() || '—';
+}
+
+function friendIsOnlineForTray(f) {
+    return f.isOnline === true || f.online === true || f.isCurrentlyOnline === true;
+}
+
+function formatGameLineForTray(game) {
+    const name = game.name || '';
+    const online = game.online ?? 0;
+    const lobbies = game.activeLobbies ?? 0;
+    const sessions = game.sessionCount ?? 0;
+    let title = `${name}: ${online} online`;
+    if (lobbies > 0 || sessions > 0) {
+        const lobbyStr = lobbies === 1 ? '1 lobby' : `${lobbies} lobbies`;
+        const sessionStr = sessions === 1 ? '1 session' : `${sessions} sessions`;
+        const parts = [];
+        if (lobbies > 0) parts.push(lobbyStr);
+        if (sessions > 0) parts.push(sessionStr);
+        title += ` · ${parts.join(', ')}`;
+    }
+    return title;
+}
+
+function formatOnlineFriendLineForTray(f) {
+    const g = f.game ? ` · ${f.game}` : '';
+    const d = f.duration ? ` (${f.duration})` : '';
+    return `${friendDisplayNameForTray(f)} – Online${g}${d}`;
+}
+
+function buildGameUrlForTray(game) {
+    const tid = game.titleId && String(game.titleId).trim();
+    if (tid) {
+        return `${XBL_SITE_URL}/game?titleId=${encodeURIComponent(tid)}`;
+    }
+    const enc = encodeURIComponent(game.name || '');
+    return `${XBL_SITE_URL}/game/${enc}`;
+}
+
+function buildDiscordTrayLineFromStore() {
+    const discordUser = store.get('discordUser');
+    const presenceActive = store.get('presenceActive');
+    const lastGameName = store.get('lastGameName');
+    if (discordUser) {
+        const pres = presenceActive ? 'Online' : 'Offline';
+        if (presenceActive && lastGameName) {
+            return `Discord: Connected · ${pres} · Playing ${lastGameName}`;
+        }
+        if (presenceActive) return `Discord: Connected · ${pres} · OG Xbox`;
+        return `Discord: Connected · ${pres}`;
+    }
+    return 'Discord: Not connected';
+}
+
+async function fetchWindowsTrayStatusData() {
+    const users = await httpsGetJson(`${XBL_SITE_URL}/api/online-users`);
+    const acc = getActiveXbAccount();
+    const loggedIn = !!(acc && acc.sessionKey);
+    let onlineFriends = [];
+    if (loggedIn) {
+        const fr = await httpsGetJsonWithHeaders(`${AUTH_API_URL}/auth/friends`, {
+            'X-Session-Key': acc.sessionKey
+        });
+        const list = (fr && fr.friends) || [];
+        onlineFriends = list.filter((f) => friendIsOnlineForTray(f));
+    }
+    let games = [];
+    if (users && typeof users === 'object' && !Array.isArray(users)) {
+        games = Object.values(users)
+            .filter((g) => {
+                const online = g.online || 0;
+                const lobbies = g.activeLobbies ?? 0;
+                const sess = g.hasActiveSession === true;
+                return online > 0 || lobbies > 0 || sess;
+            })
+            .sort((a, b) =>
+                String(a.name || '').localeCompare(String(b.name || ''), undefined, { sensitivity: 'base' })
+            );
+    }
+    return { games, onlineFriends, loggedIn };
+}
+
+async function showWindowsTrayStatusMenu() {
+    if (!tray) return;
+    let games = [];
+    let onlineFriends = [];
+    let loggedIn = false;
+    let fetchError = null;
+    try {
+        const data = await fetchWindowsTrayStatusData();
+        games = data.games;
+        onlineFriends = data.onlineFriends;
+        loggedIn = data.loggedIn;
+    } catch (e) {
+        fetchError = e.message || String(e);
+    }
+    const template = [];
+    if (fetchError) {
+        const msg = fetchError.length > 100 ? `${fetchError.slice(0, 97)}…` : fetchError;
+        template.push({ label: `Could not load: ${msg}`, enabled: false });
+        template.push({ type: 'separator' });
+    }
+    template.push({ label: 'Games online', enabled: false });
+    if (games.length === 0) {
+        template.push({ label: 'No games with active players', enabled: false });
+    } else {
+        games.forEach((g) => {
+            const label = formatGameLineForTray(g).slice(0, 250);
+            const url = buildGameUrlForTray(g);
+            template.push({
+                label,
+                click: () => {
+                    shell.openExternal(url);
+                }
+            });
+        });
+    }
+    template.push({ type: 'separator' });
+    template.push({ label: 'Friends online', enabled: false });
+    if (!loggedIn) {
+        template.push({ label: 'Log in in the app to see friends', enabled: false });
+    } else if (onlineFriends.length === 0) {
+        template.push({ label: 'No friends online', enabled: false });
+    } else {
+        onlineFriends.forEach((f) => {
+            template.push({ label: formatOnlineFriendLineForTray(f).slice(0, 250), enabled: false });
+        });
+    }
+    template.push({ type: 'separator' });
+    template.push({ label: buildDiscordTrayLineFromStore().slice(0, 250), enabled: false });
+    template.push({ type: 'separator' });
+    template.push({
+        label: 'Show XBL Beacon',
+        click: () => {
+            if (mainWindow) mainWindow.show();
+        }
+    });
+    template.push({
+        label: 'Quit',
+        click: () => {
+            isQuitting = true;
+            app.quit();
+        }
+    });
+    const menu = Menu.buildFromTemplate(template);
+    tray.popUpContextMenu(menu);
+}
+
 let mainWindow = null;
 let tray = null;
 let isQuitting = false;
 let discordRPC = null;
 let checkTimeout = null;
 let checkingActive = false;
+let lastPlayTimeEnrollmentCheckAt = 0;
+let lastPlayTimeEnrollmentDialogAt = 0;
 
 // Only send to renderer when window is visible (saves CPU when minimized to tray)
 function sendToRenderer(channel, ...args) {
@@ -188,7 +446,7 @@ function createWindow() {
         } else {
             sendToRenderer('presence-updated', { active: false });
         }
-        if (store.get('insigniaUser')) {
+        if (getActiveXbAccount()) {
             const totalMinutes = store.get('totalPlayTimeMinutes', 0);
             sendToRenderer('play-time-updated', { totalMinutes });
         }
@@ -286,17 +544,28 @@ function createTray() {
     ]);
     
     tray.setToolTip('XBL Beacon - Discord presence for xb.live');
-    tray.setContextMenu(contextMenu);
-    
-    tray.on('click', () => {
-        if (mainWindow) {
-            if (mainWindow.isVisible()) {
-                mainWindow.hide();
-            } else {
-                mainWindow.show();
+
+    if (process.platform === 'win32') {
+        // Like Insignia Menubar’s status popover: left-click shows games + friends + Discord; game rows open xb.live.
+        tray.setContextMenu(null);
+        tray.on('click', () => {
+            showWindowsTrayStatusMenu().catch((e) => logWarn('Windows tray menu:', e.message));
+        });
+        tray.on('right-click', () => {
+            tray.popUpContextMenu(contextMenu);
+        });
+    } else {
+        tray.setContextMenu(contextMenu);
+        tray.on('click', () => {
+            if (mainWindow) {
+                if (mainWindow.isVisible()) {
+                    mainWindow.hide();
+                } else {
+                    mainWindow.show();
+                }
             }
-        }
-    });
+        });
+    }
 }
 
 // Handle app ready
@@ -502,6 +771,73 @@ async function getPlayTime(username, sessionKey) {
     }
 }
 
+const PLAY_TIME_ENROLLMENT_CHECK_INTERVAL_MS = 15 * 60 * 1000;
+const PLAY_TIME_ENROLLMENT_DIALOG_COOLDOWN_MS = 45 * 60 * 1000;
+
+/** Called while Discord + xb.live checking runs: ensures play-time row exists on xb.live; nudges user if reauth needed. */
+async function verifyPlayTimeEnrollmentIfDue() {
+    const acc = getActiveXbAccount();
+    if (!acc || !acc.username || !acc.sessionKey) return;
+    if (!store.get('discordUser')) return;
+
+    const now = Date.now();
+    if (now - lastPlayTimeEnrollmentCheckAt < PLAY_TIME_ENROLLMENT_CHECK_INTERVAL_MS) return;
+    lastPlayTimeEnrollmentCheckAt = now;
+
+    const url = `${XBL_SITE_URL}/api/me/play-time?username=${encodeURIComponent(acc.username)}`;
+    let res;
+    try {
+        res = await nodeFetch(url, {
+            method: 'GET',
+            headers: { 'X-Session-Key': acc.sessionKey }
+        });
+    } catch (e) {
+        return;
+    }
+    if (!res.ok) return;
+
+    const j = res.json || {};
+    const explicitlyNotRegistered = j.playTimeRegistered === false;
+    const reauth = !!j.reauthRequired;
+
+    if (explicitlyNotRegistered) {
+        try {
+            const reg = await nodeFetch(`${XBL_SITE_URL}/api/me/play-time-register`, {
+                method: 'POST',
+                body: JSON.stringify({ sessionKey: acc.sessionKey })
+            });
+            if (reg.ok) {
+                log('play-time enrollment restored via play-time-register');
+                return;
+            }
+        } catch (e) {
+            logWarn('play-time-register retry failed:', e.message);
+        }
+    }
+
+    if (!reauth && !explicitlyNotRegistered) return;
+
+    if (now - lastPlayTimeEnrollmentDialogAt < PLAY_TIME_ENROLLMENT_DIALOG_COOLDOWN_MS) return;
+    lastPlayTimeEnrollmentDialogAt = now;
+
+    const detail = reauth
+        ? 'xb.live needs a fresh sign-in for play time sync. In XBL Beacon, log out of xb.live, then log in again so tracking stays enabled.'
+        : 'Play time is not registered for your account on xb.live. Log out and sign in again in this app (or use the site dashboard).';
+
+    try {
+        await dialog.showMessageBox(
+            mainWindow && !mainWindow.isDestroyed() ? mainWindow : undefined,
+            {
+                type: 'warning',
+                title: 'Play time tracking',
+                message: 'Play time tracking needs to be re-enabled',
+                detail,
+                buttons: ['OK']
+            }
+        );
+    } catch (e) {}
+}
+
 // Get presence from xb.live server (server calls auth refresh - same path as cron, so we get same result)
 async function getPresenceFromAuth(sessionKey) {
     try {
@@ -527,8 +863,8 @@ async function getPresenceFromAuth(sessionKey) {
 async function checkAndUpdatePresence() {
     try {
         const discordUser = store.get('discordUser');
-        const insigniaSession = store.get('insigniaSession');
-        const insigniaUser = store.get('insigniaUser');
+        const insigniaUser = getActiveXbAccount();
+        const insigniaSession = insigniaUser && insigniaUser.sessionKey;
 
         if (!discordUser || !insigniaSession || !insigniaUser) {
             await clearPresence();
@@ -537,7 +873,7 @@ async function checkAndUpdatePresence() {
 
         const username = insigniaUser.username;
         if (!username) {
-            log('No username in insigniaUser:', insigniaUser);
+            log('No username in active xb account:', insigniaUser);
             await clearPresence();
             return;
         }
@@ -553,6 +889,8 @@ async function checkAndUpdatePresence() {
                 body: JSON.stringify({ sessionKey: insigniaSession })
             }).catch(() => {});
         } catch (e) {}
+
+        verifyPlayTimeEnrollmentIfDue().catch(() => {});
 
         const wasOnline = store.get('presenceActive', false);
         
@@ -808,24 +1146,97 @@ ipcMain.handle('check-for-updates', () => checkForUpdates());
 ipcMain.handle('download-and-install-update', (event, { url, sha256 }) => downloadAndInstallUpdate(url, sha256));
 
 ipcMain.handle('get-play-time', async () => {
-    const insigniaUser = store.get('insigniaUser');
-    const insigniaSession = store.get('insigniaSession');
-    if (!insigniaUser || !insigniaUser.username) return { totalMinutes: 0, byGame: {} };
+    const acc = getActiveXbAccount();
+    if (!acc || !acc.username) return { totalMinutes: 0, byGame: {} };
     // Only call the API when user is online; otherwise return cached value
     if (!store.get('presenceActive', false)) {
         return { totalMinutes: store.get('totalPlayTimeMinutes', 0), byGame: {} };
     }
-    const data = await getPlayTime(insigniaUser.username, insigniaSession);
+    const data = await getPlayTime(acc.username, acc.sessionKey);
     store.set('totalPlayTimeMinutes', data.totalMinutes);
     return { totalMinutes: data.totalMinutes, byGame: {} };
 });
 
+ipcMain.handle('upsert-xb-account', (event, payload) => {
+    const { username, email, sessionKey } = payload || {};
+    if (!username || !sessionKey) return { ok: false };
+    migrateXbAccountsLegacy();
+    const accounts = [...store.get('xbAccounts', [])];
+    const i = accounts.findIndex((a) => a.username === username);
+    const entry = { username, email: email || '', sessionKey };
+    if (i >= 0) accounts[i] = entry;
+    else accounts.push(entry);
+    store.set('xbAccounts', accounts);
+    store.set('activeXbAccountUsername', username);
+    syncLegacyInsigniaKeysFromActive();
+    restartNotificationPoller();
+    return { ok: true };
+});
+
+ipcMain.handle('get-xb-accounts-state', () => {
+    migrateXbAccountsLegacy();
+    const accounts = store.get('xbAccounts', []);
+    return {
+        accounts: accounts.map((a) => ({ username: a.username, email: a.email || '' })),
+        activeUsername: store.get('activeXbAccountUsername') || (accounts[0] && accounts[0].username) || null
+    };
+});
+
+ipcMain.handle('switch-xb-account', async (event, username) => {
+    migrateXbAccountsLegacy();
+    const accounts = store.get('xbAccounts', []);
+    if (!accounts.find((a) => a.username === username)) return { ok: false };
+    store.set('activeXbAccountUsername', username);
+    syncLegacyInsigniaKeysFromActive();
+    const acc = getActiveXbAccount();
+    if (acc && acc.sessionKey) {
+        try {
+            await nodeFetch(`${XBL_SITE_URL}/api/me/play-time-register`, {
+                method: 'POST',
+                body: JSON.stringify({ sessionKey: acc.sessionKey })
+            });
+        } catch (e) {}
+    }
+    stopChecking();
+    if (store.get('discordUser')) startChecking();
+    restartNotificationPoller();
+    return { ok: true };
+});
+
+ipcMain.handle('logout-active-xb-account', async () => {
+    const acc = getActiveXbAccount();
+    if (!acc) return { ok: false, remaining: 0 };
+    try {
+        await nodeFetch(`${AUTH_API_URL}/auth/logout`, {
+            method: 'POST',
+            body: JSON.stringify({ sessionKey: acc.sessionKey })
+        });
+    } catch (e) {}
+    const accounts = store.get('xbAccounts', []).filter((a) => a.username !== acc.username);
+    store.set('xbAccounts', accounts);
+    if (accounts.length === 0) {
+        store.delete('activeXbAccountUsername');
+        store.delete('insigniaSession');
+        store.delete('insigniaUser');
+        stopChecking();
+        restartNotificationPoller();
+        return { ok: true, remaining: 0 };
+    }
+    store.set('activeXbAccountUsername', accounts[0].username);
+    syncLegacyInsigniaKeysFromActive();
+    stopChecking();
+    if (store.get('discordUser')) startChecking();
+    restartNotificationPoller();
+    return { ok: true, remaining: accounts.length };
+});
+
 // Start checking if both logins exist; schedule update check and report status
 app.whenReady().then(() => {
+    migrateXbAccountsLegacy();
     const discordUser = store.get('discordUser');
-    const insigniaSession = store.get('insigniaSession');
+    const acc = getActiveXbAccount();
     
-    if (discordUser && insigniaSession) {
+    if (discordUser && acc && acc.sessionKey) {
         setTimeout(async () => {
             await initDiscordRPC();
             startChecking();
@@ -837,16 +1248,94 @@ app.whenReady().then(() => {
             if (result.updateAvailable) notifyUserUpdateAvailable(result);
         });
         reportStatus();
-        const insigniaUser = store.get('insigniaUser');
-        const insigniaSession = store.get('insigniaSession');
-        if (insigniaUser && insigniaUser.username && insigniaSession) {
-            getPlayTime(insigniaUser.username, insigniaSession).then((playTime) => {
+        const accStart = getActiveXbAccount();
+        if (accStart && accStart.username && accStart.sessionKey) {
+            getPlayTime(accStart.username, accStart.sessionKey).then((playTime) => {
                 store.set('totalPlayTimeMinutes', playTime.totalMinutes);
                 sendToRenderer('play-time-updated', { totalMinutes: playTime.totalMinutes });
             }).catch(() => {});
         }
     }, 8000);
     scheduleUpdateCheck();
+    restartNotificationPoller();
+});
+
+ipcMain.handle('get-notification-settings', () => {
+    migrateNotificationSettingsV2();
+    return {
+        notifyFriendsOnline: store.get('notifyFriendsOnline') !== false,
+        notifyLobbyAlerts: store.get('notifyLobbyAlerts') === true,
+        notifyEvents: store.get('notifyEvents') === true,
+        notifyLobbyGameNames: store.get('notifyLobbyGameNames', []) || [],
+        notifyEventGameNames: store.get('notifyEventGameNames', []) || [],
+        notifyEventMinutesBefore: normalizeNotifyEventMinutesBefore(store.get('notifyEventMinutesBefore', 5)),
+        notifyTimeRanges: store.get('notifyTimeRanges', []) || [],
+        notifyPollIntervalMinutes: Math.max(1, store.get('notifyPollIntervalMinutes', 5) || 5),
+        notifyEventLeadOptions: NOTIFY_EVENT_LEAD_MINUTES,
+        notifyAchievements: store.get('notifyAchievements') === true
+    };
+});
+
+ipcMain.handle('set-notification-settings', (event, patch) => {
+    migrateNotificationSettingsV2();
+    if (patch.notifyFriendsOnline !== undefined) store.set('notifyFriendsOnline', !!patch.notifyFriendsOnline);
+    if (patch.notifyLobbyAlerts !== undefined) store.set('notifyLobbyAlerts', !!patch.notifyLobbyAlerts);
+    if (patch.notifyEvents !== undefined) store.set('notifyEvents', !!patch.notifyEvents);
+    if (patch.notifyLobbyGameNames !== undefined) store.set('notifyLobbyGameNames', patch.notifyLobbyGameNames);
+    if (patch.notifyEventGameNames !== undefined) store.set('notifyEventGameNames', patch.notifyEventGameNames);
+    if (patch.notifyGameNames !== undefined) {
+        store.set('notifyLobbyGameNames', patch.notifyGameNames);
+        store.set('notifyEventGameNames', patch.notifyGameNames);
+    }
+    if (patch.notifyEventMinutesBefore !== undefined) {
+        store.set('notifyEventMinutesBefore', normalizeNotifyEventMinutesBefore(patch.notifyEventMinutesBefore));
+    }
+    if (patch.notifyTimeRanges !== undefined) store.set('notifyTimeRanges', patch.notifyTimeRanges);
+    if (patch.notifyPollIntervalMinutes !== undefined) store.set('notifyPollIntervalMinutes', patch.notifyPollIntervalMinutes);
+    if (patch.notifyAchievements !== undefined) {
+        store.set('notifyAchievements', !!patch.notifyAchievements);
+        if (patch.notifyAchievements) {
+            store.set('notifyAchievementsSeeded', false);
+        }
+    }
+    restartNotificationPoller();
+    return { ok: true };
+});
+
+ipcMain.handle('fetch-online-users-game-list', async () => {
+    try {
+        const j = await httpsGetJson(`${XBL_SITE_URL}/api/online-users`);
+        if (!j || typeof j !== 'object') return { gameNames: [] };
+        return { gameNames: Object.keys(j).sort((a, b) => a.localeCompare(b)) };
+    } catch (e) {
+        return { gameNames: [] };
+    }
+});
+
+/** Game titles the active account has play time in (from GET /api/me/play-time byGame). */
+ipcMain.handle('get-played-game-names', async () => {
+    const acc = getActiveXbAccount();
+    if (!acc || !acc.username || !acc.sessionKey) return { gameNames: [] };
+    try {
+        const data = await getPlayTime(acc.username, acc.sessionKey);
+        const byGame = data.byGame || {};
+        const names = Object.keys(byGame).filter((k) => {
+            const raw = byGame[k];
+            const n = typeof raw === 'number' ? raw : parseFloat(raw);
+            return Number.isFinite(n) && n > 0;
+        });
+        names.sort((a, b) => a.localeCompare(b, undefined, { sensitivity: 'base' }));
+        return { gameNames: names };
+    } catch (e) {
+        return { gameNames: [] };
+    }
+});
+
+ipcMain.handle('request-notification-permission', () => {
+    if (Notification.isSupported()) {
+        new Notification({ title: 'XBL Beacon', body: 'Notifications are enabled for this app.' }).show();
+    }
+    return { ok: true };
 });
 
 // Set up Discord RPC event handlers (shared between init methods)
@@ -869,14 +1358,12 @@ function setupDiscordRPCEventHandlers() {
         if (wasActive) {
             log('Discord reconnected - checking if user still online...');
             setTimeout(async () => {
-                const insigniaSession = store.get('insigniaSession');
-                const insigniaUser = store.get('insigniaUser');
-                
-                if (insigniaSession && insigniaUser && insigniaUser.username) {
-                    const { isOnline, gameName } = await getPresenceFromAuth(insigniaSession);
+                const acc = getActiveXbAccount();
+                if (acc && acc.sessionKey && acc.username) {
+                    const { isOnline, gameName } = await getPresenceFromAuth(acc.sessionKey);
                     if (isOnline) {
                         log('User still online - restoring presence');
-                        await updatePresence(insigniaUser.username, gameName, false);
+                        await updatePresence(acc.username, gameName, false);
                     } else {
                         log('User no longer online - clearing presence');
                         await clearPresence();
@@ -901,8 +1388,8 @@ function setupDiscordRPCEventHandlers() {
         
         // Try to reconnect if user was logged in
         const discordUser = store.get('discordUser');
-        const insigniaSession = store.get('insigniaSession');
-        if (discordUser && insigniaSession) {
+        const acc = getActiveXbAccount();
+        if (discordUser && acc && acc.sessionKey) {
             log('Attempting to reconnect Discord RPC...');
             reconnectDiscordRPC(0); // Start with attempt 0
         }

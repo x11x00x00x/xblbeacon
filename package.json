@@ -1,6 +1,6 @@
 {
   "name": "xblbeacon",
-  "version": "1.0.3",
+  "version": "1.1.3",
   "description": "Desktop app for Discord presence when playing on xb.live (Insignia)",
   "main": "main.js",
   "scripts": {
@@ -41,6 +41,7 @@
     },
     "files": [
       "main.js",
+      "notifications.js",
       "preload.js",
       "renderer.js",
       "index.html",

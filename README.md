@@ -2,17 +2,23 @@
 
 A desktop app that updates your **Discord Rich Presence** when you're online on Insignia (xb.live). It shows what game you're playing and keeps the xb.live dashboard in sync with your status.
 
-## TO DOWNLOAD XBL BEACON CLICK RELEASES TO THE RIGHT ---->
-
-<img width="621" height="809" alt="Screenshot 2026-02-22 at 5 13 19 PM" src="https://github.com/user-attachments/assets/4ddf0ade-b448-4fe4-b597-fe91a894bba9" />
-
-<img width="277" height="204" alt="Screenshot 2026-02-22 at 5 13 37 PM" src="https://github.com/user-attachments/assets/60895380-6ebf-42c4-b71c-f7710f50e8e2" />
-
 ## Features
 
 - **Discord Rich Presence** – When you're online on Insignia, Discord shows your current game and "Online as [username]".
 - **xb.live integration** – Log in with your xb.live (Insignia) account. The app registers with the site and sends a heartbeat so the dashboard and cron update your status every 1–2 minutes.
+- **Multiple xb.live accounts** – Add more than one account and switch the **active** account from a dropdown; presence and notifications follow the active login.
 - **Any game** – Works with all Insignia games; presence uses the game name from your Insignia profile (e.g. "Xbox Live Dashboard", "Forza Motorsport").
+- **Total play time** – When logged in, the app can show your total time played (from xb.live) in the Presence section.
+- **Desktop notifications** (optional, system tray) – Uses your OS notification settings:
+  - **Friends** – Alert when a friend comes online.
+  - **Achievements** – Alert when you unlock a new achievement (requires the xb.live API to expose recent achievements for your session).
+  - **Lobby / session** – Alert when a lobby or session goes up for games you pick (separate list from events).
+  - **Scheduled events** – Remind you before site events for selected games; lead time is configurable (e.g. 5 or 30 minutes before).
+  - **Quiet hours** – Only notify during time ranges you add (local time), or leave empty for all day.
+  - **Poll interval** – How often the app refreshes notification-related data (1–15 minutes).
+  - **Game lists** – Refresh the pick lists from the server; optional **“Only games I’ve played”** filter to narrow choices.
+- **Loading indicator** – A centered spinner and message appear while the app is busy (e.g. logging in, switching accounts, checking for updates, downloading an update, or loading game lists) so the window does not feel frozen.
+- **Updates** – **Check for updates** and **Download update** in Settings when your distribution provides an update server; the app may also notify you when a new version is available.
 - **Background running** – Runs in the system tray and checks status every 2 minutes.
 - **Auto-start** – Option to start when your computer boots.
 - **Cross-platform** – Windows and macOS.
@@ -47,11 +53,11 @@ Icons are generated from `icon.png` in the project root before each build.
 
 - **macOS (current platform)**  
   `npm run build` or `npm run build:mac`  
-  → `dist/XBL Beacon-1.0.0-arm64.dmg` (Apple Silicon)
+  → `dist/XBL Beacon-<version>-arm64.dmg` (Apple Silicon; version comes from `package.json`)
 
 - **Windows (from macOS)**  
   `npm run build:win`  
-  → `dist/XBL Beacon-Setup-1.0.0.exe` (64-bit)
+  → `dist/XBL Beacon-Setup-<version>.exe` (64-bit NSIS installer)
 
 - **Regenerate icons only**  
   `npm run generate-icons`  
@@ -77,6 +83,8 @@ The build is configured to **sign** the app when a **Developer ID Application** 
 
 4. The **xb.live dashboard** shows your online status and play time; with the beacon running, it can update within about 1–2 minutes of you going online or offline.
 
+5. If you enable **notifications**, the app polls xb.live on the interval you set (friends list, lobby/session state, scheduled events, and—when the API supports it—recent achievements) and shows **system notifications** when something matches your toggles and game picks.
+
 It can take up to about **10 minutes** for status to appear the first time after signing in; after that, updates run every 2 minutes.
 
 ## System tray
@@ -87,6 +95,8 @@ It can take up to about **10 minutes** for status to appear the first time after
 ## Settings
 
 - **Start automatically when computer starts** – Enable in the app to launch at login (runs in the background).
+- **Notifications** – Toggle friend, achievement, lobby/session, and event alerts; pick games separately for lobby alerts vs. event reminders; set quiet hours and how often data is refreshed. Allow notifications for XBL Beacon in macOS / Windows if prompts appear.
+- **Updates** – See current **Version**, use **Check for updates**, and **Download update** when your release pipeline serves update metadata (otherwise checks may report no update).
 
 ## Troubleshooting
 
@@ -102,9 +112,10 @@ It can take up to about **10 minutes** for status to appear the first time after
 
 | Path | Purpose |
 |------|--------|
-| `main.js` | Main process: Discord RPC, profile via xb.live, beacon ping, tray, `nodeFetch` for HTTP |
+| `main.js` | Main process: Discord RPC, profile via xb.live, beacon ping, tray, notifications poller IPC, optional update checks |
+| `notifications.js` | Friend / lobby / event / achievement notification logic (loaded by main) |
 | `preload.js` | Preload script for secure IPC |
-| `renderer.js` | UI, login, presence status display |
+| `renderer.js` | UI, login, multi-account switcher, presence, notifications settings, loading overlay |
 | `index.html` | Main window |
 | `scripts/generate-icons.js` | Build script: `icon.png` → `assets/icon.ico` and `assets/icon.icns` |
 | `package.json` | Dependencies and electron-builder config |

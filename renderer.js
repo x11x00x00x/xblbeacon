@@ -4,6 +4,26 @@
 
 const INSIGNIA_AUTH_URL = 'https://auth.insigniastats.live/api';
 
+let appLoadingDepth = 0;
+
+function showLoadingOverlay(message) {
+    const overlay = document.getElementById('appLoadingOverlay');
+    if (!overlay) return;
+    const label = overlay.querySelector('[data-loading-label]');
+    if (label) label.textContent = message || 'Loading…';
+    appLoadingDepth += 1;
+    overlay.hidden = false;
+    overlay.setAttribute('aria-busy', 'true');
+}
+
+function hideLoadingOverlay() {
+    appLoadingDepth = Math.max(0, appLoadingDepth - 1);
+    const overlay = document.getElementById('appLoadingOverlay');
+    if (!overlay || appLoadingDepth > 0) return;
+    overlay.hidden = true;
+    overlay.setAttribute('aria-busy', 'false');
+}
+
 // DOM elements
 const discordStatus = document.getElementById('discordStatus');
 const discordStatusText = document.getElementById('discordStatusText');
@@ -21,6 +41,13 @@ const insigniaPasswordGroup = document.getElementById('insigniaPasswordGroup');
 const insigniaLoginBtn = document.getElementById('insigniaLoginBtn');
 const insigniaLogoutBtn = document.getElementById('insigniaLogoutBtn');
 const insigniaError = document.getElementById('insigniaError');
+const xbAccountSelect = document.getElementById('xbAccountSelect');
+const xbAccountSwitcherRow = document.getElementById('xbAccountSwitcherRow');
+const addAnotherAccountBtn = document.getElementById('addAnotherAccountBtn');
+
+/** When true, email/password are shown to add a second xb.live account */
+let showInsigniaAddForm = false;
+let lastXbAccountSelectValue = '';
 
 const presenceStatus = document.getElementById('presenceStatus');
 const presenceText = document.getElementById('presenceText');
@@ -28,6 +55,36 @@ const presenceDetails = document.getElementById('presenceDetails');
 const totalTimePlayedEl = document.getElementById('totalTimePlayed');
 
 const autoStartCheckbox = document.getElementById('autoStartCheckbox');
+
+const notifyFriendsCheckbox = document.getElementById('notifyFriendsCheckbox');
+const notifyAchievementsCheckbox = document.getElementById('notifyAchievementsCheckbox');
+const notifyLobbyAlertsCheckbox = document.getElementById('notifyLobbyAlertsCheckbox');
+const notifyEventsCheckbox = document.getElementById('notifyEventsCheckbox');
+const notifyLobbyGamesList = document.getElementById('notifyLobbyGamesList');
+const notifyEventGamesList = document.getElementById('notifyEventGamesList');
+const notifyEventMinutesBeforeSelect = document.getElementById('notifyEventMinutesBefore');
+const refreshNotifyGamesBtn = document.getElementById('refreshNotifyGamesBtn');
+const notifyGamesFilterPlayedBtn = document.getElementById('notifyGamesFilterPlayedBtn');
+const notifyTimeRangesList = document.getElementById('notifyTimeRangesList');
+const notifyRangeStart = document.getElementById('notifyRangeStart');
+const notifyRangeEnd = document.getElementById('notifyRangeEnd');
+const addNotifyRangeBtn = document.getElementById('addNotifyRangeBtn');
+const notifyPollInterval = document.getElementById('notifyPollInterval');
+
+/** Local copy of time ranges for UI; persisted via setNotificationSettings */
+let notifyTimeRangesDraft = [];
+
+/** Full game list from xb.live online-users; used when toggling “only played” filter */
+let cachedNotifyAllGames = [];
+let notifyGamesPlayedFilterActive = false;
+let cachedPlayedGameNames = [];
+
+function filterGamesToPlayedIntersection(allGames, playedNames) {
+    if (!Array.isArray(allGames) || !allGames.length) return [];
+    if (!Array.isArray(playedNames) || !playedNames.length) return [];
+    const playedLower = new Set(playedNames.map((p) => String(p).trim().toLowerCase()));
+    return allGames.filter((g) => playedLower.has(String(g).trim().toLowerCase()));
+}
 
 function formatPlayTime(totalMinutes) {
     if (totalMinutes == null) return 'Total time played: —';
@@ -53,8 +110,29 @@ async function initDiscordRPC() {
     return true;
 }
 
+async function refreshXbAccountsUi() {
+    if (!electronAPI.getXbAccountsState || !xbAccountSelect || !xbAccountSwitcherRow || !addAnotherAccountBtn) return;
+    const { accounts, activeUsername } = await electronAPI.getXbAccountsState();
+    xbAccountSelect.innerHTML = '';
+    accounts.forEach((a) => {
+        const opt = document.createElement('option');
+        opt.value = a.username;
+        opt.textContent = a.username;
+        xbAccountSelect.appendChild(opt);
+    });
+    if (activeUsername) {
+        xbAccountSelect.value = activeUsername;
+        lastXbAccountSelectValue = activeUsername;
+    }
+    xbAccountSwitcherRow.style.display = accounts.length > 1 ? 'block' : 'none';
+    addAnotherAccountBtn.style.display = accounts.length >= 1 ? 'block' : 'none';
+}
+
 // Load saved state
-async function loadState() {
+async function loadState(opts = {}) {
+    const showOverlay = opts.showOverlay !== false;
+    if (showOverlay) showLoadingOverlay('Loading…');
+    try {
     const discordUser = await electronAPI.getStoreValue('discordUser');
     const insigniaSession = await electronAPI.getStoreValue('insigniaSession');
     const insigniaUser = await electronAPI.getStoreValue('insigniaUser');
@@ -69,12 +147,14 @@ async function loadState() {
         updateDiscordStatus(false);
     }
 
-    // Update Insignia status
+    // Update Insignia status (legacy keys stay in sync with active account from main)
     if (insigniaSession && insigniaUser) {
         updateInsigniaStatus(true, insigniaUser);
     } else {
         updateInsigniaStatus(false);
     }
+
+    await refreshXbAccountsUi();
 
     // Update presence status (game name from store if set by main)
     const lastGameName = await electronAPI.getStoreValue('lastGameName');
@@ -98,6 +178,272 @@ async function loadState() {
     } else {
         setTotalTimePlayed(null);
     }
+
+    await loadNotificationSettings();
+    } finally {
+        if (showOverlay) hideLoadingOverlay();
+    }
+}
+
+function timeStrToMinutes(str) {
+    if (!str || typeof str !== 'string') return null;
+    const m = /^(\d{1,2}):(\d{2})$/.exec(str.trim());
+    if (!m) return null;
+    const h = parseInt(m[1], 10);
+    const mi = parseInt(m[2], 10);
+    if (h > 23 || mi > 59) return null;
+    return h * 60 + mi;
+}
+
+function formatMinutesAsTime(minutes) {
+    const h = Math.floor(minutes / 60) % 24;
+    const mi = minutes % 60;
+    return `${String(h).padStart(2, '0')}:${String(mi).padStart(2, '0')}`;
+}
+
+function renderNotifyTimeRanges() {
+    if (!notifyTimeRangesList) return;
+    notifyTimeRangesList.innerHTML = '';
+    if (!notifyTimeRangesDraft.length) {
+        const p = document.createElement('div');
+        p.className = 'info';
+        p.textContent = 'No restrictions (all day).';
+        notifyTimeRangesList.appendChild(p);
+        return;
+    }
+    notifyTimeRangesDraft.forEach((range, index) => {
+        const row = document.createElement('div');
+        row.className = 'notify-range-row';
+        const start = typeof range.startMinutes === 'number' ? range.startMinutes : 0;
+        const end = typeof range.endMinutes === 'number' ? range.endMinutes : 0;
+        row.innerHTML = `<span>${formatMinutesAsTime(start)} – ${formatMinutesAsTime(end)}</span>`;
+        const removeBtn = document.createElement('button');
+        removeBtn.type = 'button';
+        removeBtn.className = 'secondary';
+        removeBtn.style.cssText = 'width: auto; padding: 4px 10px; margin-left: auto;';
+        removeBtn.textContent = 'Remove';
+        removeBtn.addEventListener('click', async () => {
+            notifyTimeRangesDraft.splice(index, 1);
+            if (electronAPI.setNotificationSettings) {
+                await electronAPI.setNotificationSettings({ notifyTimeRanges: [...notifyTimeRangesDraft] });
+            }
+            renderNotifyTimeRanges();
+        });
+        row.appendChild(removeBtn);
+        notifyTimeRangesList.appendChild(row);
+    });
+}
+
+function renderNotifyGameCheckboxList(container, gameNames, selectedNames, listKind) {
+    if (!container) return;
+    container.innerHTML = '';
+    const selected = new Set(Array.isArray(selectedNames) ? selectedNames : []);
+    if (!gameNames.length) {
+        const p = document.createElement('div');
+        p.className = 'info';
+        p.style.fontSize = '12px';
+        if (notifyGamesPlayedFilterActive && cachedNotifyAllGames.length && !cachedPlayedGameNames.length) {
+            p.textContent =
+                'No play-time games returned. Log in to xb.live and ensure play time is tracked, or turn off “only played”.';
+        } else if (notifyGamesPlayedFilterActive && cachedNotifyAllGames.length) {
+            p.textContent =
+                'None of your played games appear in the live list right now. Try Refresh or turn off the filter.';
+        } else {
+            p.textContent = 'No games yet (or refresh failed). Try Refresh when xb.live is reachable.';
+        }
+        container.appendChild(p);
+        return;
+    }
+    gameNames.forEach((name, i) => {
+        const id = `notify-${listKind}-game-${i}`;
+        const label = document.createElement('label');
+        const cb = document.createElement('input');
+        cb.type = 'checkbox';
+        cb.id = id;
+        cb.checked = selected.has(name);
+        cb.addEventListener('change', async () => {
+            const visibleChecked = gameNames.filter((g, j) => {
+                const el = document.getElementById(`notify-${listKind}-game-${j}`);
+                return el && el.checked;
+            });
+            if (!electronAPI.getNotificationSettings || !electronAPI.setNotificationSettings) return;
+            const s = await electronAPI.getNotificationSettings();
+            const stored =
+                listKind === 'lobby' ? s.notifyLobbyGameNames || [] : s.notifyEventGameNames || [];
+            const displaySet = new Set(gameNames);
+            const hiddenKept = stored.filter((x) => !displaySet.has(x));
+            const merged = [...new Set([...hiddenKept, ...visibleChecked])];
+            const patch =
+                listKind === 'lobby'
+                    ? { notifyLobbyGameNames: merged }
+                    : { notifyEventGameNames: merged };
+            await electronAPI.setNotificationSettings(patch);
+        });
+        label.appendChild(cb);
+        const span = document.createElement('span');
+        span.textContent = name;
+        label.appendChild(span);
+        container.appendChild(label);
+    });
+}
+
+async function refreshBothNotifyGameLists(lobbySelected, eventSelected) {
+    if (!electronAPI.fetchOnlineUsersGameList) return;
+    let gameNames = [];
+    try {
+        const res = await electronAPI.fetchOnlineUsersGameList();
+        gameNames = res && Array.isArray(res.gameNames) ? res.gameNames : [];
+    } catch (e) {
+        gameNames = [];
+    }
+    cachedNotifyAllGames = gameNames;
+    let display = gameNames;
+    if (notifyGamesPlayedFilterActive) {
+        display = cachedPlayedGameNames.length
+            ? filterGamesToPlayedIntersection(gameNames, cachedPlayedGameNames)
+            : [];
+    }
+    renderNotifyGameCheckboxList(notifyLobbyGamesList, display, lobbySelected, 'lobby');
+    renderNotifyGameCheckboxList(notifyEventGamesList, display, eventSelected, 'event');
+}
+
+async function loadNotificationSettings() {
+    if (!electronAPI.getNotificationSettings) return;
+    try {
+        const s = await electronAPI.getNotificationSettings();
+        if (notifyFriendsCheckbox) notifyFriendsCheckbox.checked = s.notifyFriendsOnline !== false;
+        if (notifyAchievementsCheckbox) notifyAchievementsCheckbox.checked = s.notifyAchievements === true;
+        if (notifyLobbyAlertsCheckbox) notifyLobbyAlertsCheckbox.checked = s.notifyLobbyAlerts === true;
+        if (notifyEventsCheckbox) notifyEventsCheckbox.checked = s.notifyEvents === true;
+        if (notifyEventMinutesBeforeSelect) {
+            const allowed = Array.isArray(s.notifyEventLeadOptions)
+                ? s.notifyEventLeadOptions
+                : [3, 5, 10, 15, 30, 60, 90, 120];
+            let m = Number(s.notifyEventMinutesBefore) || 5;
+            if (!allowed.includes(m)) m = 5;
+            notifyEventMinutesBeforeSelect.value = String(m);
+        }
+        if (notifyPollInterval) {
+            const allowed = [1, 3, 5, 10, 15];
+            let p = Number(s.notifyPollIntervalMinutes) || 5;
+            if (!allowed.includes(p)) p = 5;
+            notifyPollInterval.value = String(p);
+        }
+        notifyTimeRangesDraft = Array.isArray(s.notifyTimeRanges) ? s.notifyTimeRanges.map((r) => ({
+            startMinutes: r.startMinutes,
+            endMinutes: r.endMinutes
+        })) : [];
+        renderNotifyTimeRanges();
+        await refreshBothNotifyGameLists(s.notifyLobbyGameNames, s.notifyEventGameNames);
+    } catch (e) {
+        console.error('loadNotificationSettings', e);
+    }
+}
+
+if (notifyFriendsCheckbox && electronAPI.setNotificationSettings) {
+    notifyFriendsCheckbox.addEventListener('change', async (e) => {
+        const on = e.target.checked;
+        if (on && electronAPI.requestNotificationPermission) {
+            await electronAPI.requestNotificationPermission();
+        }
+        await electronAPI.setNotificationSettings({ notifyFriendsOnline: on });
+    });
+}
+if (notifyAchievementsCheckbox && electronAPI.setNotificationSettings) {
+    notifyAchievementsCheckbox.addEventListener('change', async (e) => {
+        const on = e.target.checked;
+        if (on && electronAPI.requestNotificationPermission) {
+            await electronAPI.requestNotificationPermission();
+        }
+        await electronAPI.setNotificationSettings({ notifyAchievements: on });
+    });
+}
+if (notifyLobbyAlertsCheckbox && electronAPI.setNotificationSettings) {
+    notifyLobbyAlertsCheckbox.addEventListener('change', async (e) => {
+        const on = e.target.checked;
+        if (on && electronAPI.requestNotificationPermission) {
+            await electronAPI.requestNotificationPermission();
+        }
+        await electronAPI.setNotificationSettings({ notifyLobbyAlerts: on });
+    });
+}
+if (notifyEventsCheckbox && electronAPI.setNotificationSettings) {
+    notifyEventsCheckbox.addEventListener('change', async (e) => {
+        const on = e.target.checked;
+        if (on && electronAPI.requestNotificationPermission) {
+            await electronAPI.requestNotificationPermission();
+        }
+        await electronAPI.setNotificationSettings({ notifyEvents: on });
+    });
+}
+if (notifyEventMinutesBeforeSelect && electronAPI.setNotificationSettings) {
+    notifyEventMinutesBeforeSelect.addEventListener('change', async (e) => {
+        const n = parseInt(e.target.value, 10);
+        if (!Number.isFinite(n)) return;
+        await electronAPI.setNotificationSettings({ notifyEventMinutesBefore: n });
+    });
+}
+if (refreshNotifyGamesBtn && electronAPI.getNotificationSettings) {
+    refreshNotifyGamesBtn.addEventListener('click', async () => {
+        refreshNotifyGamesBtn.disabled = true;
+        showLoadingOverlay('Loading game lists…');
+        try {
+            if (notifyGamesPlayedFilterActive && electronAPI.getPlayedGameNames) {
+                const r = await electronAPI.getPlayedGameNames();
+                cachedPlayedGameNames = r && Array.isArray(r.gameNames) ? r.gameNames : [];
+            }
+            const s = await electronAPI.getNotificationSettings();
+            await refreshBothNotifyGameLists(s.notifyLobbyGameNames, s.notifyEventGameNames);
+        } finally {
+            hideLoadingOverlay();
+            refreshNotifyGamesBtn.disabled = false;
+        }
+    });
+}
+if (notifyGamesFilterPlayedBtn && electronAPI.getNotificationSettings) {
+    const labelPlayed = "Only games I've played";
+    const labelAll = 'Show all games';
+    notifyGamesFilterPlayedBtn.addEventListener('click', async () => {
+        notifyGamesPlayedFilterActive = !notifyGamesPlayedFilterActive;
+        notifyGamesFilterPlayedBtn.disabled = true;
+        showLoadingOverlay('Loading game lists…');
+        try {
+            if (notifyGamesPlayedFilterActive) {
+                notifyGamesFilterPlayedBtn.textContent = labelAll;
+                if (electronAPI.getPlayedGameNames) {
+                    const r = await electronAPI.getPlayedGameNames();
+                    cachedPlayedGameNames = r && Array.isArray(r.gameNames) ? r.gameNames : [];
+                } else {
+                    cachedPlayedGameNames = [];
+                }
+            } else {
+                notifyGamesFilterPlayedBtn.textContent = labelPlayed;
+                cachedPlayedGameNames = [];
+            }
+            const s = await electronAPI.getNotificationSettings();
+            await refreshBothNotifyGameLists(s.notifyLobbyGameNames, s.notifyEventGameNames);
+        } finally {
+            hideLoadingOverlay();
+            notifyGamesFilterPlayedBtn.disabled = false;
+        }
+    });
+}
+if (addNotifyRangeBtn && electronAPI.setNotificationSettings) {
+    addNotifyRangeBtn.addEventListener('click', async () => {
+        const startM = timeStrToMinutes(notifyRangeStart ? notifyRangeStart.value : '');
+        const endM = timeStrToMinutes(notifyRangeEnd ? notifyRangeEnd.value : '');
+        if (startM == null || endM == null) return;
+        notifyTimeRangesDraft.push({ startMinutes: startM, endMinutes: endM });
+        await electronAPI.setNotificationSettings({ notifyTimeRanges: [...notifyTimeRangesDraft] });
+        renderNotifyTimeRanges();
+    });
+}
+if (notifyPollInterval && electronAPI.setNotificationSettings) {
+    notifyPollInterval.addEventListener('change', async (e) => {
+        const n = parseInt(e.target.value, 10);
+        if (!Number.isFinite(n)) return;
+        await electronAPI.setNotificationSettings({ notifyPollIntervalMinutes: n });
+    });
 }
 
 function updateDiscordStatus(connected, user = null) {
@@ -120,19 +466,29 @@ function updateInsigniaStatus(connected, user = null) {
     if (connected) {
         insigniaStatus.className = 'status-indicator connected';
         insigniaStatusText.textContent = 'Connected';
-        insigniaUsername.textContent = user ? `Logged in as: ${user.username || 'Unknown'}` : '';
-        insigniaEmailGroup.style.display = 'none';
-        insigniaPasswordGroup.style.display = 'none';
-        insigniaLoginBtn.style.display = 'none';
+        insigniaUsername.textContent = user ? `Active: ${user.username || 'Unknown'}` : '';
+        if (showInsigniaAddForm) {
+            insigniaEmailGroup.style.display = 'block';
+            insigniaPasswordGroup.style.display = 'block';
+            insigniaLoginBtn.style.display = 'block';
+            insigniaLoginBtn.textContent = 'Add account';
+        } else {
+            insigniaEmailGroup.style.display = 'none';
+            insigniaPasswordGroup.style.display = 'none';
+            insigniaLoginBtn.style.display = 'none';
+            insigniaLoginBtn.textContent = 'Login to xb.live';
+        }
         insigniaLogoutBtn.style.display = 'block';
         insigniaError.textContent = '';
     } else {
+        showInsigniaAddForm = false;
         insigniaStatus.className = 'status-indicator disconnected';
         insigniaStatusText.textContent = 'Not connected';
         insigniaUsername.textContent = '';
         insigniaEmailGroup.style.display = 'block';
         insigniaPasswordGroup.style.display = 'block';
         insigniaLoginBtn.style.display = 'block';
+        insigniaLoginBtn.textContent = 'Login to xb.live';
         insigniaLogoutBtn.style.display = 'none';
     }
 }
@@ -167,6 +523,7 @@ discordLoginBtn.addEventListener('click', async () => {
     try {
         discordLoginBtn.disabled = true;
         discordLoginBtn.textContent = 'Connecting...';
+        showLoadingOverlay('Connecting to Discord…');
 
         // Request main process to initialize Discord RPC
         // The main process will handle the RPC connection
@@ -185,6 +542,7 @@ discordLoginBtn.addEventListener('click', async () => {
         console.error('Discord connection error:', error);
         alert('Failed to connect to Discord. Make sure Discord is running and try again.');
     } finally {
+        hideLoadingOverlay();
         discordLoginBtn.disabled = false;
         discordLoginBtn.textContent = 'Login to Discord';
     }
@@ -215,6 +573,7 @@ insigniaLoginBtn.addEventListener('click', async () => {
     insigniaError.className = 'error';
     insigniaLoginBtn.disabled = true;
     insigniaLoginBtn.textContent = 'Logging in...';
+    showLoadingOverlay('Signing in to xb.live…');
 
     const waitingMessage = 'Waiting for a response from Insignia this may take up to a minute.';
     const waitingTimeout = setTimeout(() => {
@@ -242,13 +601,23 @@ insigniaLoginBtn.addEventListener('click', async () => {
             email: data.email || email
         };
 
-        await electronAPI.setStoreValue('insigniaSession', data.sessionKey);
-        await electronAPI.setStoreValue('insigniaUser', user);
+        if (electronAPI.upsertXbAccount) {
+            await electronAPI.upsertXbAccount({
+                username: user.username,
+                email: user.email,
+                sessionKey: data.sessionKey
+            });
+        } else {
+            await electronAPI.setStoreValue('insigniaSession', data.sessionKey);
+            await electronAPI.setStoreValue('insigniaUser', user);
+        }
 
         clearTimeout(waitingTimeout);
         insigniaError.textContent = '';
+        showInsigniaAddForm = false;
         updateInsigniaStatus(true, user);
         insigniaPassword.value = '';
+        await refreshXbAccountsUi();
 
         // Register with xbl.live so the site tracks play time and current game
         const reg = await electronAPI.registerWithXbl(data.sessionKey);
@@ -264,34 +633,71 @@ insigniaLoginBtn.addEventListener('click', async () => {
         insigniaError.textContent = error.message || 'Failed to login';
     } finally {
         clearTimeout(waitingTimeout);
+        hideLoadingOverlay();
         insigniaLoginBtn.disabled = false;
         insigniaLoginBtn.textContent = 'Login to xb.live';
     }
 });
 
-// Insignia logout
+// Insignia logout (active account only; other saved accounts remain)
 insigniaLogoutBtn.addEventListener('click', async () => {
+    if (electronAPI.logoutActiveXbAccount) {
+        const result = await electronAPI.logoutActiveXbAccount();
+        if (result && result.ok) {
+            showInsigniaAddForm = false;
+            await loadState();
+        }
+        return;
+    }
     const sessionKey = await electronAPI.getStoreValue('insigniaSession');
-    
     if (sessionKey) {
         try {
             await fetch(`${INSIGNIA_AUTH_URL}/auth/logout`, {
                 method: 'POST',
-                headers: {
-                    'Content-Type': 'application/json'
-                },
+                headers: { 'Content-Type': 'application/json' },
                 body: JSON.stringify({ sessionKey })
             });
-        } catch (error) {
-            console.error('Logout error:', error);
-        }
+        } catch (e) {}
     }
-    
     await electronAPI.deleteStoreValue('insigniaSession');
     await electronAPI.deleteStoreValue('insigniaUser');
+    showInsigniaAddForm = false;
     updateInsigniaStatus(false);
     stopChecking();
 });
+
+if (addAnotherAccountBtn) {
+    addAnotherAccountBtn.addEventListener('click', () => {
+        showInsigniaAddForm = true;
+        insigniaEmail.value = '';
+        insigniaPassword.value = '';
+        electronAPI.getStoreValue('insigniaUser').then((u) => {
+            updateInsigniaStatus(true, u);
+        });
+    });
+}
+
+if (xbAccountSelect) {
+    xbAccountSelect.addEventListener('change', async () => {
+        const username = xbAccountSelect.value;
+        if (!username || username === lastXbAccountSelectValue) return;
+        showLoadingOverlay('Switching account…');
+        try {
+            const r = await electronAPI.switchXbAccount(username);
+            if (r && r.ok) {
+                lastXbAccountSelectValue = username;
+                const u = await electronAPI.getStoreValue('insigniaUser');
+                updateInsigniaStatus(true, u);
+                await refreshXbAccountsUi();
+                await loadState({ showOverlay: false });
+            } else {
+                xbAccountSelect.value = lastXbAccountSelectValue;
+            }
+        } finally {
+            hideLoadingOverlay();
+        }
+    });
+}
 
 // Clear Discord presence
 async function clearDiscordPresence() {
@@ -371,6 +777,7 @@ checkUpdateBtn.addEventListener('click', async () => {
     checkUpdateBtn.disabled = true;
     updateAvailableEl.style.display = 'none';
     showUpdateStatus('Checking for updates…', false);
+    showLoadingOverlay('Checking for updates…');
     try {
         const result = await electronAPI.checkForUpdates();
         if (result.updateAvailable && result.url) {
@@ -383,6 +790,7 @@ checkUpdateBtn.addEventListener('click', async () => {
     } catch (e) {
         showUpdateStatus('Update check failed.', true);
     } finally {
+        hideLoadingOverlay();
         checkUpdateBtn.disabled = false;
     }
 });
@@ -390,12 +798,14 @@ checkUpdateBtn.addEventListener('click', async () => {
 downloadUpdateBtn.addEventListener('click', async () => {
     if (!pendingUpdate || !electronAPI.downloadAndInstallUpdate) return;
     downloadUpdateBtn.disabled = true;
+    showLoadingOverlay('Preparing download…');
     try {
         await electronAPI.downloadAndInstallUpdate({ url: pendingUpdate.url, sha256: pendingUpdate.sha256 });
         showUpdateStatus('Download started. Install the update and restart the app.', false);
     } catch (e) {
         showUpdateStatus('Download failed: ' + (e.message || 'Unknown error'), true);
     } finally {
+        hideLoadingOverlay();
         downloadUpdateBtn.disabled = false;
     }
 });

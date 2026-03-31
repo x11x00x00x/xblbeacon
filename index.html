@@ -214,9 +214,82 @@
             font-size: 12px;
             color: #888;
         }
+        .notify-games-list {
+            max-height: 160px;
+            overflow-y: auto;
+            border: 1px solid #3a3a3a;
+            border-radius: 6px;
+            padding: 8px;
+            background: #1e1e1e;
+        }
+        .notify-games-list label {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 12px;
+            color: #ccc;
+            margin-bottom: 6px;
+            cursor: pointer;
+        }
+        .notify-ranges-list {
+            font-size: 12px;
+            color: #aaa;
+        }
+        .notify-range-row {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            margin-bottom: 6px;
+        }
+
+        .app-loading-overlay {
+            position: fixed;
+            inset: 0;
+            z-index: 10000;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            background: rgba(0, 0, 0, 0.55);
+            -webkit-backdrop-filter: blur(3px);
+            backdrop-filter: blur(3px);
+        }
+        .app-loading-overlay[hidden] {
+            display: none !important;
+        }
+        .app-loading-spinner {
+            width: 44px;
+            height: 44px;
+            border: 3px solid rgba(255, 255, 255, 0.12);
+            border-top-color: #5865f2;
+            border-radius: 50%;
+            animation: app-loading-spin 0.7s linear infinite;
+        }
+        @keyframes app-loading-spin {
+            to { transform: rotate(360deg); }
+        }
+        @media (prefers-reduced-motion: reduce) {
+            .app-loading-spinner {
+                animation: none;
+                border-top-color: #5865f2;
+                opacity: 0.85;
+            }
+        }
+        .app-loading-label {
+            margin-top: 16px;
+            font-size: 14px;
+            color: #ccc;
+            max-width: 280px;
+            text-align: center;
+            line-height: 1.4;
+        }
     </style>
 </head>
 <body>
+    <div id="appLoadingOverlay" class="app-loading-overlay" hidden role="status" aria-live="polite" aria-busy="false">
+        <div class="app-loading-spinner" aria-hidden="true"></div>
+        <div class="app-loading-label" data-loading-label>Loading…</div>
+    </div>
     <div class="container">
         <h1>XBL Beacon</h1>
         <div class="subtitle">Discord presence for xb.live</div>
@@ -241,6 +314,11 @@
                 <span class="status-text" id="insigniaStatusText">Not connected</span>
             </div>
             <div class="username" id="insigniaUsername"></div>
+            <div class="input-group" id="xbAccountSwitcherRow" style="display: none;">
+                <label for="xbAccountSelect">Active account</label>
+                <select id="xbAccountSelect" style="width: 100%; padding: 8px; background: #1e1e1e; border: 1px solid #3a3a3a; border-radius: 4px; color: #fff; font-size: 13px;"></select>
+            </div>
+            <button type="button" id="addAnotherAccountBtn" class="secondary" style="display: none; margin-top: 8px;">Add another account</button>
             <div class="input-group" id="insigniaEmailGroup">
                 <label for="insigniaEmail">Email</label>
                 <input type="email" id="insigniaEmail" placeholder="your@email.com">
@@ -265,6 +343,73 @@
             </div>
             <div class="info" style="margin-top: 10px;">
                 It can take up to 10 minutes for your online status to begin showing on the site and in Discord.
+            </div>
+        </div>
+
+        <!-- Notifications: friends, optional lobby alerts, optional event reminders (separate game picks) -->
+        <div class="section">
+            <div class="section-title">Notifications</div>
+            <div class="info" style="margin-bottom: 10px;">
+                Friend, lobby, and event alerts use your system notification settings. Enable them in macOS / Windows Settings if needed.
+            </div>
+            <div class="checkbox-group">
+                <input type="checkbox" id="notifyFriendsCheckbox">
+                <label for="notifyFriendsCheckbox" class="checkbox-label">Notify when a friend comes online</label>
+            </div>
+            <div class="checkbox-group">
+                <input type="checkbox" id="notifyAchievementsCheckbox">
+                <label for="notifyAchievementsCheckbox" class="checkbox-label">Notify when you unlock a new achievement</label>
+            </div>
+            <div class="info" style="margin: -4px 0 10px 0; font-size: 11px;">Shows the game and achievement name. Uses your xb.live login; the server must provide <code style="font-size: 10px;">GET /api/me/achievement-feed</code> (or <code style="font-size: 10px;">/api/me/achievements/recent</code>) with <code style="font-size: 10px;">X-Session-Key</code>.</div>
+            <div class="checkbox-group">
+                <input type="checkbox" id="notifyLobbyAlertsCheckbox">
+                <label for="notifyLobbyAlertsCheckbox" class="checkbox-label">Notify when a lobby or session goes up</label>
+            </div>
+            <div class="section-title" style="margin-top: 12px; font-size: 13px;">Games for lobby / session alerts</div>
+            <div class="info" style="margin-bottom: 6px; font-size: 11px;">Only used if lobby alerts are on. You can use different games for events below.</div>
+            <div id="notifyLobbyGamesList" class="notify-games-list"></div>
+            <div class="checkbox-group" style="margin-top: 14px;">
+                <input type="checkbox" id="notifyEventsCheckbox">
+                <label for="notifyEventsCheckbox" class="checkbox-label">Notify before scheduled site events</label>
+            </div>
+            <div style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center;">
+                <label for="notifyEventMinutesBefore" class="checkbox-label" style="margin: 0;">Remind me</label>
+                <select id="notifyEventMinutesBefore" style="width: auto; min-width: 160px; padding: 8px; background: #1e1e1e; border: 1px solid #3a3a3a; border-radius: 4px; color: #fff; font-size: 13px;">
+                    <option value="3">3 minutes before</option>
+                    <option value="5">5 minutes before</option>
+                    <option value="10">10 minutes before</option>
+                    <option value="15">15 minutes before</option>
+                    <option value="30">30 minutes before</option>
+                    <option value="60">1 hour before</option>
+                    <option value="90">1.5 hours before</option>
+                    <option value="120">2 hours before</option>
+                </select>
+            </div>
+            <div class="section-title" style="margin-top: 12px; font-size: 13px;">Games for event reminders</div>
+            <div class="info" style="margin-bottom: 6px; font-size: 11px;">Only events for these games trigger a notification. Quiet hours below also apply.</div>
+            <div id="notifyEventGamesList" class="notify-games-list"></div>
+            <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; margin-bottom: 8px;">
+                <button type="button" id="refreshNotifyGamesBtn" class="secondary" style="width: auto; padding: 6px 12px;">Refresh game lists</button>
+                <button type="button" id="notifyGamesFilterPlayedBtn" class="secondary" style="width: auto; padding: 6px 12px;">Only games I’ve played</button>
+            </div>
+            <div class="section-title" style="margin-top: 12px; font-size: 13px;">Only notify during these hours (local time)</div>
+            <div class="info" style="margin-bottom: 6px;">Leave empty for all day.</div>
+            <div id="notifyTimeRangesList" class="notify-ranges-list"></div>
+            <div class="notify-add-range" style="margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
+                <input type="time" id="notifyRangeStart" value="09:00" style="width: auto;">
+                <span style="color: #888;">to</span>
+                <input type="time" id="notifyRangeEnd" value="17:00" style="width: auto;">
+                <button type="button" id="addNotifyRangeBtn" class="secondary" style="width: auto; padding: 6px 12px;">Add time range</button>
+            </div>
+            <div style="margin-top: 12px;">
+                <label for="notifyPollInterval" class="checkbox-label" style="display: block; margin-bottom: 4px;">Refresh notification data every</label>
+                <select id="notifyPollInterval" style="width: 100%; max-width: 220px; padding: 8px; background: #1e1e1e; border: 1px solid #3a3a3a; border-radius: 4px; color: #fff; font-size: 13px;">
+                    <option value="1">1 minute</option>
+                    <option value="3">3 minutes</option>
+                    <option value="5">5 minutes</option>
+                    <option value="10">10 minutes</option>
+                    <option value="15">15 minutes</option>
+                </select>
             </div>
         </div>
 
