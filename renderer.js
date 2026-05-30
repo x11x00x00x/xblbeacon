@@ -3,6 +3,37 @@
 // We'll handle RPC in main process and communicate via IPC
 
 const INSIGNIA_AUTH_URL = 'https://auth.insigniastats.live/api';
+const XBL_SITE_URL = 'https://xb.live';
+const BEACON_SPECIAL_ACCESS = 'beacon';
+
+async function applyBeaconPartnerLoginTag(username, sessionKey) {
+    if (!username || !sessionKey) return;
+    try {
+        await fetch(`${INSIGNIA_AUTH_URL}/auth/special-access`, {
+            method: 'POST',
+            headers: {
+                'Content-Type': 'application/json',
+                'X-Session-Key': sessionKey
+            },
+            body: JSON.stringify({ special_access: BEACON_SPECIAL_ACCESS })
+        });
+    } catch (e) {
+        /* optional */
+    }
+    try {
+        await fetch(`${XBL_SITE_URL}/api/auth/log-login`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+                username,
+                sessionKey,
+                special_access: BEACON_SPECIAL_ACCESS
+            })
+        });
+    } catch (e) {
+        /* optional */
+    }
+}
 
 let appLoadingDepth = 0;
 
@@ -94,6 +125,142 @@ function formatPlayTime(totalMinutes) {
     if (h > 0 && m > 0) return `Total time played: ${h}h ${m}m`;
     if (h > 0) return `Total time played: ${h}h`;
     return `Total time played: ${m}m`;
+}
+
+function formatPlayTimeShort(totalMinutes) {
+    const total = Number(totalMinutes);
+    if (!Number.isFinite(total) || total < 0) return '—';
+    const h = Math.floor(total / 60);
+    const m = Math.round(total % 60);
+    if (h > 0 && m > 0) return `${h}h ${m}m`;
+    if (h > 0) return `${h}h`;
+    return `${m}m`;
+}
+
+function formatLastPlayed(ts, label) {
+    if (label === 'Playing now') return { text: 'Playing now', isNow: true };
+    if (ts == null) return { text: '—', isNow: false };
+    const n = Number(ts);
+    if (!Number.isFinite(n) || n <= 0) return { text: '—', isNow: false };
+    const d = new Date(n);
+    if (Number.isNaN(d.getTime())) return { text: '—', isNow: false };
+    const now = Date.now();
+    const diffMs = now - n;
+    if (diffMs < 60 * 1000) return { text: 'Just now', isNow: false };
+    if (diffMs < 60 * 60 * 1000) {
+        const mins = Math.floor(diffMs / (60 * 1000));
+        return { text: `${mins}m ago`, isNow: false };
+    }
+    if (diffMs < 24 * 60 * 60 * 1000) {
+        const hrs = Math.floor(diffMs / (60 * 60 * 1000));
+        return { text: `${hrs}h ago`, isNow: false };
+    }
+    if (diffMs < 7 * 24 * 60 * 60 * 1000) {
+        const days = Math.floor(diffMs / (24 * 60 * 60 * 1000));
+        return { text: `${days}d ago`, isNow: false };
+    }
+    return {
+        text: d.toLocaleDateString(undefined, { month: 'short', day: 'numeric', year: 'numeric' }),
+        isNow: false
+    };
+}
+
+const analyticsUsernameEl = document.getElementById('analyticsUsername');
+const analyticsTotalTimeEl = document.getElementById('analyticsTotalTime');
+const analyticsGameCountEl = document.getElementById('analyticsGameCount');
+const analyticsUpdatedEl = document.getElementById('analyticsUpdated');
+const analyticsEmptyEl = document.getElementById('analyticsEmpty');
+const analyticsTableEl = document.getElementById('analyticsTable');
+const analyticsTableBodyEl = document.getElementById('analyticsTableBody');
+const refreshAnalyticsBtn = document.getElementById('refreshAnalyticsBtn');
+
+function renderPlayTimeAnalytics(data) {
+    if (!analyticsUsernameEl) return;
+
+    if (!data || !data.ok) {
+        analyticsUsernameEl.textContent = '—';
+        analyticsTotalTimeEl.textContent = '—';
+        analyticsGameCountEl.textContent = '—';
+        if (analyticsUpdatedEl) analyticsUpdatedEl.textContent = '';
+        if (analyticsTableEl) analyticsTableEl.hidden = true;
+        if (analyticsTableBodyEl) analyticsTableBodyEl.innerHTML = '';
+        if (analyticsEmptyEl) {
+            analyticsEmptyEl.style.display = 'block';
+            analyticsEmptyEl.textContent =
+                data && data.error === 'not_logged_in'
+                    ? 'Log in to xb.live in the Accounts tab to see your game analytics.'
+                    : 'Could not load analytics.';
+        }
+        return;
+    }
+
+    const games = Array.isArray(data.games) ? data.games : [];
+    analyticsUsernameEl.textContent = data.username || '—';
+    analyticsTotalTimeEl.textContent = formatPlayTimeShort(data.totalMinutes);
+    analyticsGameCountEl.textContent = String(games.length);
+
+    if (analyticsUpdatedEl) {
+        analyticsUpdatedEl.textContent = data.fetchedAt
+            ? `Updated ${new Date(data.fetchedAt).toLocaleString()}`
+            : '';
+    }
+
+    if (!games.length) {
+        if (analyticsTableEl) analyticsTableEl.hidden = true;
+        if (analyticsTableBodyEl) analyticsTableBodyEl.innerHTML = '';
+        if (analyticsEmptyEl) {
+            analyticsEmptyEl.style.display = 'block';
+            analyticsEmptyEl.textContent = 'No play time recorded yet. Play online on xb.live and check back later.';
+        }
+        return;
+    }
+
+    if (analyticsEmptyEl) analyticsEmptyEl.style.display = 'none';
+    if (analyticsTableEl) analyticsTableEl.hidden = false;
+    if (!analyticsTableBodyEl) return;
+
+    analyticsTableBodyEl.innerHTML = '';
+    games.forEach((game) => {
+        const tr = document.createElement('tr');
+        const last = formatLastPlayed(game.lastPlayed, game.lastPlayedLabel);
+        tr.innerHTML = `
+            <td class="game-name">${escapeHtml(game.name)}</td>
+            <td class="play-time">${escapeHtml(formatPlayTimeShort(game.minutes))}</td>
+            <td class="last-played${last.isNow ? ' now' : ''}">${escapeHtml(last.text)}</td>
+        `;
+        analyticsTableBodyEl.appendChild(tr);
+    });
+}
+
+function escapeHtml(str) {
+    return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;');
+}
+
+let analyticsLoading = false;
+
+async function refreshPlayTimeAnalytics() {
+    if (!electronAPI.getPlayTimeAnalytics || analyticsLoading) return;
+    analyticsLoading = true;
+    if (refreshAnalyticsBtn) refreshAnalyticsBtn.disabled = true;
+    try {
+        const data = await electronAPI.getPlayTimeAnalytics();
+        renderPlayTimeAnalytics(data);
+    } catch (e) {
+        renderPlayTimeAnalytics({ ok: false, error: 'fetch_failed' });
+    } finally {
+        analyticsLoading = false;
+        if (refreshAnalyticsBtn) refreshAnalyticsBtn.disabled = false;
+    }
+}
+
+window.refreshPlayTimeAnalytics = refreshPlayTimeAnalytics;
+
+if (refreshAnalyticsBtn) {
+    refreshAnalyticsBtn.addEventListener('click', () => refreshPlayTimeAnalytics());
 }
 
 function setTotalTimePlayed(totalMinutes) {
@@ -572,14 +739,17 @@ insigniaLoginBtn.addEventListener('click', async () => {
     insigniaError.textContent = '';
     insigniaError.className = 'error';
     insigniaLoginBtn.disabled = true;
-    insigniaLoginBtn.textContent = 'Logging in...';
+    insigniaLoginBtn.textContent = 'Signing in…';
     showLoadingOverlay('Signing in to xb.live…');
 
-    const waitingMessage = 'Waiting for a response from Insignia this may take up to a minute.';
+    const waitingMessage = 'Signing in… this may take up to 1 minute to complete.';
     const waitingTimeout = setTimeout(() => {
         insigniaError.textContent = waitingMessage;
         insigniaError.className = 'info';
-    }, 5000);
+        const overlay = document.getElementById('appLoadingOverlay');
+        const label = overlay && overlay.querySelector('[data-loading-label]');
+        if (label) label.textContent = waitingMessage;
+    }, 3000);
 
     try {
         const response = await fetch(`${INSIGNIA_AUTH_URL}/auth/login`, {
@@ -587,7 +757,7 @@ insigniaLoginBtn.addEventListener('click', async () => {
             headers: {
                 'Content-Type': 'application/json'
             },
-            body: JSON.stringify({ email, password })
+            body: JSON.stringify({ email, password, special_access: BEACON_SPECIAL_ACCESS })
         });
 
         const data = await response.json();
@@ -617,6 +787,7 @@ insigniaLoginBtn.addEventListener('click', async () => {
         showInsigniaAddForm = false;
         updateInsigniaStatus(true, user);
         insigniaPassword.value = '';
+        await applyBeaconPartnerLoginTag(user.username, data.sessionKey);
         await refreshXbAccountsUi();
 
         // Register with xbl.live so the site tracks play time and current game

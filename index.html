@@ -5,241 +5,663 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>XBL Beacon</title>
     <style>
+        :root {
+            --bg: #050505;
+            --surface: rgba(255, 255, 255, 0.03);
+            --surface-hover: rgba(255, 255, 255, 0.06);
+            --border: rgba(255, 255, 255, 0.08);
+            --border-strong: rgba(255, 255, 255, 0.12);
+            --text: #f5f5f5;
+            --text-secondary: rgba(255, 255, 255, 0.72);
+            --text-muted: rgba(255, 255, 255, 0.45);
+            --green: #7ddf64;
+            --green-dim: rgba(125, 223, 100, 0.15);
+            --orange: #ff8c2a;
+            --orange-dim: rgba(255, 140, 42, 0.12);
+            --indigo: #818cf8;
+            --indigo-dim: rgba(99, 102, 241, 0.18);
+            --danger: #f87171;
+            --success: #4ade80;
+            --radius: 14px;
+            --radius-sm: 10px;
+            --sidebar-w: 196px;
+        }
+
         * {
             margin: 0;
             padding: 0;
             box-sizing: border-box;
         }
 
+        html, body {
+            height: 100%;
+            overflow: hidden;
+        }
+
         body {
             font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Oxygen, Ubuntu, Cantarell, sans-serif;
-            background: #1e1e1e;
-            color: #ffffff;
-            padding: 20px;
+            background: var(--bg);
+            color: var(--text);
+            line-height: 1.45;
         }
 
-        .container {
-            max-width: 460px;
-            margin: 0 auto;
+        body::before {
+            content: '';
+            position: fixed;
+            inset: 0;
+            pointer-events: none;
+            background:
+                radial-gradient(ellipse 80% 50% at 50% -20%, rgba(255, 140, 42, 0.08), transparent 55%),
+                radial-gradient(ellipse 60% 40% at 100% 100%, rgba(125, 223, 100, 0.06), transparent 50%);
+            z-index: 0;
         }
 
-        h1 {
-            font-size: 24px;
-            margin-bottom: 5px;
-            color: #ffffff;
+        .app-shell {
+            position: relative;
+            z-index: 1;
+            display: flex;
+            flex-direction: column;
+            height: 100vh;
+            max-height: 100vh;
         }
 
-        .subtitle {
-            font-size: 14px;
-            color: #888;
-            margin-bottom: 20px;
+        .app-header {
+            flex-shrink: 0;
+            display: flex;
+            align-items: center;
+            gap: 14px;
+            padding: 16px 20px;
+            border-bottom: 1px solid var(--border);
+            background: rgba(5, 5, 5, 0.85);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
         }
 
-        .section {
-            margin-bottom: 20px;
-            padding: 15px;
-            background: #2a2a2a;
-            border-radius: 8px;
-            border: 1px solid #3a3a3a;
+        .app-logo {
+            width: 44px;
+            height: 44px;
+            border-radius: 50%;
+            object-fit: cover;
+            box-shadow: 0 0 0 1px var(--border-strong), 0 4px 20px rgba(255, 140, 42, 0.15);
         }
 
-        .section-title {
-            font-size: 14px;
+        .app-header-text h1 {
+            font-size: 17px;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            color: #fff;
+        }
+
+        .app-header-text .subtitle {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-top: 1px;
+        }
+
+        .app-body {
+            flex: 1;
+            display: flex;
+            min-height: 0;
+            padding: 14px 14px 14px 0;
+        }
+
+        .sidebar {
+            flex: 0 0 var(--sidebar-w);
+            width: var(--sidebar-w);
+            display: flex;
+            flex-direction: column;
+            padding: 0 10px 0 14px;
+        }
+
+        .sidebar-label {
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.14em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            padding: 4px 10px 10px;
+        }
+
+        .nav-tab {
+            display: flex;
+            align-items: center;
+            gap: 10px;
+            width: 100%;
+            text-align: left;
+            padding: 10px 12px;
+            margin-bottom: 4px;
+            font-size: 13px;
+            font-weight: 500;
+            border: none;
+            border-radius: var(--radius-sm);
+            background: transparent;
+            color: var(--text-secondary);
+            cursor: pointer;
+            transition: background 0.15s, color 0.15s;
+            position: relative;
+        }
+
+        .nav-tab:hover {
+            background: var(--surface-hover);
+            color: #fff;
+        }
+
+        .nav-tab.active {
+            color: #fff;
+            background: var(--indigo-dim);
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.06);
+        }
+
+        .nav-tab.active::before {
+            content: '';
+            position: absolute;
+            left: 0;
+            top: 50%;
+            transform: translateY(-50%);
+            width: 3px;
+            height: 18px;
+            border-radius: 0 3px 3px 0;
+            background: var(--indigo);
+        }
+
+        .nav-tab svg {
+            flex-shrink: 0;
+            opacity: 0.7;
+        }
+
+        .nav-tab.active svg {
+            opacity: 1;
+        }
+
+        .main {
+            flex: 1;
+            min-width: 0;
+            overflow-y: auto;
+            padding: 0 14px 14px 4px;
+            -webkit-overflow-scrolling: touch;
+        }
+
+        .panel {
+            display: none;
+            animation: panelIn 0.2s ease;
+        }
+
+        .panel.active {
+            display: block;
+        }
+
+        @keyframes panelIn {
+            from { opacity: 0; transform: translateY(4px); }
+            to { opacity: 1; transform: translateY(0); }
+        }
+
+        @media (prefers-reduced-motion: reduce) {
+            .panel.active { animation: none; }
+        }
+
+        .panel-heading {
+            margin-bottom: 14px;
+        }
+
+        .panel-heading h2 {
+            font-size: 20px;
+            font-weight: 700;
+            letter-spacing: -0.02em;
+            color: #fff;
+        }
+
+        .panel-heading p {
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-top: 4px;
+        }
+
+        .card {
+            background: var(--surface);
+            border: 1px solid var(--border);
+            border-radius: var(--radius);
+            padding: 16px 18px;
+            margin-bottom: 12px;
+            box-shadow: inset 0 1px 0 rgba(255, 255, 255, 0.04);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+        }
+
+        .card-title {
+            font-size: 13px;
             font-weight: 600;
-            margin-bottom: 10px;
-            color: #ffffff;
+            color: #fff;
+            margin-bottom: 12px;
+            display: flex;
+            align-items: center;
+            gap: 8px;
         }
+
+        .card-title .dot {
+            width: 8px;
+            height: 8px;
+            border-radius: 50%;
+            background: var(--text-muted);
+        }
+
+        .card-title .dot.discord { background: #5865f2; }
+        .card-title .dot.xbl { background: var(--green); }
 
         .status {
             display: flex;
             align-items: center;
-            gap: 8px;
-            margin-bottom: 10px;
+            gap: 10px;
+            margin-bottom: 8px;
         }
 
         .status-indicator {
-            width: 12px;
-            height: 12px;
+            width: 10px;
+            height: 10px;
             border-radius: 50%;
-            background: #666;
+            background: var(--text-muted);
+            flex-shrink: 0;
         }
 
         .status-indicator.connected {
-            background: #4ade80;
+            background: var(--success);
+            box-shadow: 0 0 10px rgba(74, 222, 128, 0.45);
             animation: pulse 3s ease-in-out infinite;
         }
+
         @media (prefers-reduced-motion: reduce) {
             .status-indicator.connected { animation: none; }
         }
 
         .status-indicator.disconnected {
-            background: #ef4444;
+            background: var(--danger);
         }
 
         @keyframes pulse {
             0%, 100% { opacity: 1; }
-            50% { opacity: 0.5; }
+            50% { opacity: 0.55; }
         }
 
         .status-text {
             font-size: 13px;
-            color: #cccccc;
+            color: var(--text-secondary);
         }
 
         .username {
             font-size: 12px;
-            color: #888;
-            margin-top: 5px;
+            color: var(--text-muted);
+            margin-bottom: 12px;
         }
 
-        button {
+        .btn {
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
             width: 100%;
-            padding: 10px;
-            background: #5865f2;
-            color: white;
+            padding: 10px 16px;
             border: none;
-            border-radius: 6px;
-            font-size: 14px;
-            font-weight: 500;
+            border-radius: var(--radius-sm);
+            font-size: 13px;
+            font-weight: 600;
             cursor: pointer;
-            transition: background 0.2s;
-            margin-top: 10px;
+            transition: background 0.15s, transform 0.1s, box-shadow 0.15s;
+            margin-top: 8px;
         }
 
-        button:hover {
+        .btn:first-of-type { margin-top: 0; }
+
+        .btn:active:not(:disabled) {
+            transform: scale(0.98);
+        }
+
+        .btn-primary {
+            background: linear-gradient(135deg, var(--green) 0%, #5ec94a 100%);
+            color: #0a0a0a;
+            box-shadow: 0 2px 12px rgba(125, 223, 100, 0.25);
+        }
+
+        .btn-primary:hover:not(:disabled) {
+            filter: brightness(1.06);
+        }
+
+        .btn-discord {
+            background: #5865f2;
+            color: #fff;
+            box-shadow: 0 2px 12px rgba(88, 101, 242, 0.3);
+        }
+
+        .btn-discord:hover:not(:disabled) {
             background: #4752c4;
         }
 
-        button:disabled {
-            background: #3a3a3a;
-            cursor: not-allowed;
-            opacity: 0.6;
+        .btn-secondary {
+            background: var(--surface-hover);
+            color: var(--text-secondary);
+            border: 1px solid var(--border-strong);
+            width: auto;
+            padding: 8px 14px;
+            margin-top: 0;
+        }
+
+        .btn-secondary:hover:not(:disabled) {
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
         }
 
         button.secondary {
-            background: #2a2a2a;
-            border: 1px solid #3a3a3a;
-            margin-top: 5px;
+            display: inline-flex;
+            align-items: center;
+            justify-content: center;
+            width: auto;
+            padding: 6px 12px;
+            border: 1px solid var(--border-strong);
+            border-radius: var(--radius-sm);
+            background: var(--surface-hover);
+            color: var(--text-secondary);
+            font-size: 12px;
+            font-weight: 600;
+            cursor: pointer;
         }
 
-        button.secondary:hover {
-            background: #3a3a3a;
+        button.secondary:hover:not(:disabled) {
+            background: rgba(255, 255, 255, 0.1);
+            color: #fff;
+        }
+
+        .btn:disabled {
+            opacity: 0.45;
+            cursor: not-allowed;
+            transform: none;
         }
 
         .input-group {
-            margin-bottom: 10px;
+            margin-bottom: 12px;
+        }
+
+        .input-group:last-of-type {
+            margin-bottom: 0;
         }
 
         label {
             display: block;
-            font-size: 12px;
-            color: #cccccc;
-            margin-bottom: 5px;
+            font-size: 11px;
+            font-weight: 600;
+            letter-spacing: 0.04em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            margin-bottom: 6px;
         }
 
-        input {
+        input[type="email"],
+        input[type="password"],
+        input[type="time"],
+        select {
             width: 100%;
-            padding: 8px;
-            background: #1e1e1e;
-            border: 1px solid #3a3a3a;
-            border-radius: 4px;
-            color: #ffffff;
+            padding: 10px 12px;
+            background: rgba(0, 0, 0, 0.35);
+            border: 1px solid var(--border-strong);
+            border-radius: var(--radius-sm);
+            color: #fff;
             font-size: 13px;
+            transition: border-color 0.15s, box-shadow 0.15s;
         }
 
-        input:focus {
+        input:focus, select:focus {
             outline: none;
-            border-color: #5865f2;
+            border-color: rgba(125, 223, 100, 0.45);
+            box-shadow: 0 0 0 3px rgba(125, 223, 100, 0.1);
         }
 
-        .error {
-            color: #ef4444;
-            font-size: 12px;
-            margin-top: 5px;
+        select {
+            cursor: pointer;
         }
 
-        .success {
-            color: #4ade80;
-            font-size: 12px;
-            margin-top: 5px;
-        }
+        .error { color: var(--danger); font-size: 12px; margin-top: 8px; }
+        .success { color: var(--success); font-size: 12px; margin-top: 8px; }
 
         .info {
             font-size: 11px;
-            color: #888;
-            margin-top: 10px;
-            line-height: 1.4;
+            color: var(--text-muted);
+            line-height: 1.5;
         }
 
         .presence-status {
-            margin-top: 10px;
-            padding: 10px;
-            background: #1e1e1e;
-            border-radius: 4px;
-            font-size: 12px;
+            padding: 14px 16px;
+            background: rgba(0, 0, 0, 0.35);
+            border-radius: var(--radius-sm);
+            border: 1px solid var(--border);
+            font-size: 13px;
         }
 
         .presence-status.active {
-            border-left: 3px solid #4ade80;
+            border-color: rgba(125, 223, 100, 0.35);
+            background: var(--green-dim);
+            box-shadow: inset 0 1px 0 rgba(125, 223, 100, 0.08);
         }
 
         .presence-status.inactive {
-            border-left: 3px solid #666;
+            border-left: 3px solid var(--text-muted);
+        }
+
+        .presence-status.active strong {
+            color: var(--green);
         }
 
         .checkbox-group {
             display: flex;
-            align-items: center;
-            gap: 8px;
-            margin-top: 10px;
+            align-items: flex-start;
+            gap: 10px;
+            padding: 10px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .checkbox-group:last-child {
+            border-bottom: none;
         }
 
         input[type="checkbox"] {
-            width: auto;
-            margin: 0;
+            width: 16px;
+            height: 16px;
+            margin-top: 2px;
+            accent-color: var(--green);
+            cursor: pointer;
+            flex-shrink: 0;
         }
 
         .checkbox-label {
-            font-size: 12px;
-            color: #cccccc;
+            font-size: 13px;
+            color: var(--text-secondary);
             cursor: pointer;
+            line-height: 1.4;
         }
+
+        .subheading {
+            font-size: 11px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            margin: 18px 0 8px;
+        }
+
+        .subheading:first-child { margin-top: 0; }
+
+        .btn-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin: 10px 0;
+        }
+
+        .field-row {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 10px;
+            align-items: center;
+            margin-top: 10px;
+        }
+
+        .field-row select {
+            width: auto;
+            min-width: 160px;
+        }
+
         .update-row {
             display: flex;
             align-items: center;
-            gap: 10px;
+            gap: 12px;
             flex-wrap: wrap;
+            margin-top: 14px;
+            padding-top: 14px;
+            border-top: 1px solid var(--border);
         }
+
         .version-text {
             font-size: 12px;
-            color: #888;
+            color: var(--text-muted);
         }
+
+        .analytics-summary {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 16px 24px;
+            margin-bottom: 14px;
+            font-size: 13px;
+            color: var(--text-secondary);
+        }
+
+        .analytics-summary strong {
+            color: #fff;
+            font-weight: 600;
+        }
+
+        .analytics-table-wrap {
+            overflow-x: auto;
+            margin-top: 4px;
+        }
+
+        .analytics-table {
+            width: 100%;
+            border-collapse: collapse;
+            font-size: 13px;
+        }
+
+        .analytics-table th {
+            text-align: left;
+            font-size: 10px;
+            font-weight: 700;
+            letter-spacing: 0.08em;
+            text-transform: uppercase;
+            color: var(--text-muted);
+            padding: 0 10px 10px 0;
+            border-bottom: 1px solid var(--border);
+        }
+
+        .analytics-table th:last-child,
+        .analytics-table td:last-child {
+            text-align: right;
+            padding-right: 0;
+        }
+
+        .analytics-table td {
+            padding: 11px 10px 11px 0;
+            border-bottom: 1px solid var(--border);
+            color: var(--text-secondary);
+            vertical-align: middle;
+        }
+
+        .analytics-table tr:last-child td {
+            border-bottom: none;
+        }
+
+        .analytics-table .game-name {
+            color: #fff;
+            font-weight: 500;
+        }
+
+        .analytics-table .play-time {
+            white-space: nowrap;
+            font-variant-numeric: tabular-nums;
+        }
+
+        .analytics-table .last-played {
+            white-space: nowrap;
+            font-size: 12px;
+            color: var(--text-muted);
+        }
+
+        .analytics-table .last-played.now {
+            color: var(--green);
+            font-weight: 600;
+        }
+
+        .analytics-empty {
+            font-size: 13px;
+            color: var(--text-muted);
+            padding: 8px 0;
+        }
+
+        .analytics-toolbar {
+            display: flex;
+            align-items: center;
+            justify-content: space-between;
+            gap: 12px;
+            margin-bottom: 12px;
+        }
+
+        .analytics-updated {
+            font-size: 11px;
+            color: var(--text-muted);
+        }
+
         .notify-games-list {
-            max-height: 160px;
+            max-height: 140px;
             overflow-y: auto;
-            border: 1px solid #3a3a3a;
-            border-radius: 6px;
-            padding: 8px;
-            background: #1e1e1e;
+            border: 1px solid var(--border);
+            border-radius: var(--radius-sm);
+            padding: 8px 10px;
+            background: rgba(0, 0, 0, 0.3);
         }
+
         .notify-games-list label {
             display: flex;
             align-items: center;
             gap: 8px;
             font-size: 12px;
-            color: #ccc;
+            color: var(--text-secondary);
             margin-bottom: 6px;
             cursor: pointer;
+            text-transform: none;
+            letter-spacing: 0;
+            font-weight: 400;
         }
+
         .notify-ranges-list {
             font-size: 12px;
-            color: #aaa;
+            color: var(--text-secondary);
         }
+
         .notify-range-row {
             display: flex;
             align-items: center;
             gap: 8px;
             margin-bottom: 6px;
+        }
+
+        .notify-add-range {
+            display: flex;
+            gap: 8px;
+            flex-wrap: wrap;
+            align-items: center;
+            margin-top: 10px;
+        }
+
+        .notify-add-range input[type="time"] {
+            width: auto;
+        }
+
+        .accounts-grid {
+            display: grid;
+            gap: 12px;
         }
 
         .app-loading-overlay {
@@ -250,38 +672,38 @@
             flex-direction: column;
             align-items: center;
             justify-content: center;
-            background: rgba(0, 0, 0, 0.55);
-            -webkit-backdrop-filter: blur(3px);
-            backdrop-filter: blur(3px);
+            background: rgba(5, 5, 5, 0.75);
+            backdrop-filter: blur(6px);
+            -webkit-backdrop-filter: blur(6px);
         }
+
         .app-loading-overlay[hidden] {
             display: none !important;
         }
+
         .app-loading-spinner {
             width: 44px;
             height: 44px;
-            border: 3px solid rgba(255, 255, 255, 0.12);
-            border-top-color: #5865f2;
+            border: 3px solid rgba(255, 255, 255, 0.1);
+            border-top-color: var(--green);
             border-radius: 50%;
             animation: app-loading-spin 0.7s linear infinite;
         }
+
         @keyframes app-loading-spin {
             to { transform: rotate(360deg); }
         }
+
         @media (prefers-reduced-motion: reduce) {
-            .app-loading-spinner {
-                animation: none;
-                border-top-color: #5865f2;
-                opacity: 0.85;
-            }
+            .app-loading-spinner { animation: none; opacity: 0.85; }
         }
+
         .app-loading-label {
             margin-top: 16px;
             font-size: 14px;
-            color: #ccc;
+            color: var(--text-secondary);
             max-width: 280px;
             text-align: center;
-            line-height: 1.4;
         }
     </style>
 </head>
@@ -290,151 +712,280 @@
         <div class="app-loading-spinner" aria-hidden="true"></div>
         <div class="app-loading-label" data-loading-label>Loading…</div>
     </div>
-    <div class="container">
-        <h1>XBL Beacon</h1>
-        <div class="subtitle">Discord presence for xb.live</div>
 
-        <!-- Discord Status -->
-        <div class="section">
-            <div class="section-title">Discord</div>
-            <div class="status">
-                <div class="status-indicator" id="discordStatus"></div>
-                <span class="status-text" id="discordStatusText">Not connected</span>
+    <div class="app-shell">
+        <header class="app-header">
+            <img src="assets/xbl-logo.png" alt="OG XBL" class="app-logo" width="44" height="44">
+            <div class="app-header-text">
+                <h1>XBL Beacon</h1>
+                <div class="subtitle">Discord presence for xb.live</div>
             </div>
-            <div class="username" id="discordUsername"></div>
-            <button id="discordLoginBtn">Login to Discord</button>
-            <button id="discordLogoutBtn" class="secondary" style="display: none;">Logout</button>
-        </div>
+        </header>
 
-        <!-- xb.live / Insignia Status -->
-        <div class="section">
-            <div class="section-title">xb.live (Insignia)</div>
-            <div class="status">
-                <div class="status-indicator" id="insigniaStatus"></div>
-                <span class="status-text" id="insigniaStatusText">Not connected</span>
-            </div>
-            <div class="username" id="insigniaUsername"></div>
-            <div class="input-group" id="xbAccountSwitcherRow" style="display: none;">
-                <label for="xbAccountSelect">Active account</label>
-                <select id="xbAccountSelect" style="width: 100%; padding: 8px; background: #1e1e1e; border: 1px solid #3a3a3a; border-radius: 4px; color: #fff; font-size: 13px;"></select>
-            </div>
-            <button type="button" id="addAnotherAccountBtn" class="secondary" style="display: none; margin-top: 8px;">Add another account</button>
-            <div class="input-group" id="insigniaEmailGroup">
-                <label for="insigniaEmail">Email</label>
-                <input type="email" id="insigniaEmail" placeholder="your@email.com">
-            </div>
-            <div class="input-group" id="insigniaPasswordGroup">
-                <label for="insigniaPassword">Password</label>
-                <input type="password" id="insigniaPassword" placeholder="Password">
-            </div>
-            <button id="insigniaLoginBtn">Login to xb.live</button>
-            <button id="insigniaLogoutBtn" class="secondary" style="display: none;">Logout</button>
-            <div id="insigniaError" class="error"></div>
-        </div>
+        <div class="app-body">
+            <nav class="sidebar" aria-label="App sections">
+                <div class="sidebar-label">Menu</div>
+                <button type="button" class="nav-tab active" data-panel="panel-overview" aria-selected="true">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 9.5L12 3l9 6.5V20a1 1 0 0 1-1 1h-5v-7H9v7H4a1 1 0 0 1-1-1V9.5z"/></svg>
+                    Overview
+                </button>
+                <button type="button" class="nav-tab" data-panel="panel-accounts" aria-selected="false">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M20 21v-2a4 4 0 0 0-4-4H8a4 4 0 0 0-4 4v2"/><circle cx="12" cy="7" r="4"/></svg>
+                    Accounts
+                </button>
+                <button type="button" class="nav-tab" data-panel="panel-notifications" aria-selected="false">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 8A6 6 0 0 0 6 8c0 7-3 9-3 9h18s-3-2-3-9"/><path d="M13.73 21a2 2 0 0 1-3.46 0"/></svg>
+                    Alerts
+                </button>
+                <button type="button" class="nav-tab" data-panel="panel-analytics" aria-selected="false">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><path d="M18 20V10M12 20V4M6 20v-6"/></svg>
+                    Analytics
+                </button>
+                <button type="button" class="nav-tab" data-panel="panel-settings" aria-selected="false">
+                    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="3"/><path d="M12 1v2M12 21v2M4.22 4.22l1.42 1.42M18.36 18.36l1.42 1.42M1 12h2M21 12h2M4.22 19.78l1.42-1.42M18.36 5.64l1.42-1.42"/></svg>
+                    Settings
+                </button>
+            </nav>
 
-        <!-- Presence Status -->
-        <div class="section">
-            <div class="section-title">Presence Status</div>
-            <div class="presence-status inactive" id="presenceStatus">
-                <div>Status: <strong id="presenceText">Not active</strong></div>
-                <div style="margin-top: 5px; font-size: 11px;" id="presenceDetails"></div>
-                <div style="margin-top: 5px; font-size: 11px; color: #aaa;" id="totalTimePlayed"></div>
-                <div style="margin-top: 5px; font-size: 10px; color: #888;" id="debugInfo"></div>
-            </div>
-            <div class="info" style="margin-top: 10px;">
-                It can take up to 10 minutes for your online status to begin showing on the site and in Discord.
-            </div>
-        </div>
+            <main class="main">
+                <!-- Overview -->
+                <section id="panel-overview" class="panel active" role="tabpanel">
+                    <div class="panel-heading">
+                        <h2>Overview</h2>
+                        <p>Your live presence on xb.live and Discord</p>
+                    </div>
 
-        <!-- Notifications: friends, optional lobby alerts, optional event reminders (separate game picks) -->
-        <div class="section">
-            <div class="section-title">Notifications</div>
-            <div class="info" style="margin-bottom: 10px;">
-                Friend, lobby, and event alerts use your system notification settings. Enable them in macOS / Windows Settings if needed.
-            </div>
-            <div class="checkbox-group">
-                <input type="checkbox" id="notifyFriendsCheckbox">
-                <label for="notifyFriendsCheckbox" class="checkbox-label">Notify when a friend comes online</label>
-            </div>
-            <div class="checkbox-group">
-                <input type="checkbox" id="notifyAchievementsCheckbox">
-                <label for="notifyAchievementsCheckbox" class="checkbox-label">Notify when you unlock a new achievement</label>
-            </div>
-            <div class="info" style="margin: -4px 0 10px 0; font-size: 11px;">Shows the game and achievement name. Uses your xb.live login; the server must provide <code style="font-size: 10px;">GET /api/me/achievement-feed</code> (or <code style="font-size: 10px;">/api/me/achievements/recent</code>) with <code style="font-size: 10px;">X-Session-Key</code>.</div>
-            <div class="checkbox-group">
-                <input type="checkbox" id="notifyLobbyAlertsCheckbox">
-                <label for="notifyLobbyAlertsCheckbox" class="checkbox-label">Notify when a lobby or session goes up</label>
-            </div>
-            <div class="section-title" style="margin-top: 12px; font-size: 13px;">Games for lobby / session alerts</div>
-            <div class="info" style="margin-bottom: 6px; font-size: 11px;">Only used if lobby alerts are on. You can use different games for events below.</div>
-            <div id="notifyLobbyGamesList" class="notify-games-list"></div>
-            <div class="checkbox-group" style="margin-top: 14px;">
-                <input type="checkbox" id="notifyEventsCheckbox">
-                <label for="notifyEventsCheckbox" class="checkbox-label">Notify before scheduled site events</label>
-            </div>
-            <div style="margin-top: 8px; display: flex; flex-wrap: wrap; gap: 10px; align-items: center;">
-                <label for="notifyEventMinutesBefore" class="checkbox-label" style="margin: 0;">Remind me</label>
-                <select id="notifyEventMinutesBefore" style="width: auto; min-width: 160px; padding: 8px; background: #1e1e1e; border: 1px solid #3a3a3a; border-radius: 4px; color: #fff; font-size: 13px;">
-                    <option value="3">3 minutes before</option>
-                    <option value="5">5 minutes before</option>
-                    <option value="10">10 minutes before</option>
-                    <option value="15">15 minutes before</option>
-                    <option value="30">30 minutes before</option>
-                    <option value="60">1 hour before</option>
-                    <option value="90">1.5 hours before</option>
-                    <option value="120">2 hours before</option>
-                </select>
-            </div>
-            <div class="section-title" style="margin-top: 12px; font-size: 13px;">Games for event reminders</div>
-            <div class="info" style="margin-bottom: 6px; font-size: 11px;">Only events for these games trigger a notification. Quiet hours below also apply.</div>
-            <div id="notifyEventGamesList" class="notify-games-list"></div>
-            <div style="display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; margin-bottom: 8px;">
-                <button type="button" id="refreshNotifyGamesBtn" class="secondary" style="width: auto; padding: 6px 12px;">Refresh game lists</button>
-                <button type="button" id="notifyGamesFilterPlayedBtn" class="secondary" style="width: auto; padding: 6px 12px;">Only games I’ve played</button>
-            </div>
-            <div class="section-title" style="margin-top: 12px; font-size: 13px;">Only notify during these hours (local time)</div>
-            <div class="info" style="margin-bottom: 6px;">Leave empty for all day.</div>
-            <div id="notifyTimeRangesList" class="notify-ranges-list"></div>
-            <div class="notify-add-range" style="margin-top: 8px; display: flex; gap: 8px; flex-wrap: wrap; align-items: center;">
-                <input type="time" id="notifyRangeStart" value="09:00" style="width: auto;">
-                <span style="color: #888;">to</span>
-                <input type="time" id="notifyRangeEnd" value="17:00" style="width: auto;">
-                <button type="button" id="addNotifyRangeBtn" class="secondary" style="width: auto; padding: 6px 12px;">Add time range</button>
-            </div>
-            <div style="margin-top: 12px;">
-                <label for="notifyPollInterval" class="checkbox-label" style="display: block; margin-bottom: 4px;">Refresh notification data every</label>
-                <select id="notifyPollInterval" style="width: 100%; max-width: 220px; padding: 8px; background: #1e1e1e; border: 1px solid #3a3a3a; border-radius: 4px; color: #fff; font-size: 13px;">
-                    <option value="1">1 minute</option>
-                    <option value="3">3 minutes</option>
-                    <option value="5">5 minutes</option>
-                    <option value="10">10 minutes</option>
-                    <option value="15">15 minutes</option>
-                </select>
-            </div>
-        </div>
+                    <div class="card">
+                        <div class="card-title">Presence</div>
+                        <div class="presence-status inactive" id="presenceStatus">
+                            <div>Status: <strong id="presenceText">Not active</strong></div>
+                            <div style="margin-top: 6px; font-size: 12px; color: var(--text-muted);" id="presenceDetails"></div>
+                            <div style="margin-top: 6px; font-size: 12px; color: var(--text-muted);" id="totalTimePlayed"></div>
+                            <div style="margin-top: 4px; font-size: 11px; color: var(--text-muted);" id="debugInfo"></div>
+                        </div>
+                        <p class="info" style="margin-top: 12px;">
+                            It can take up to 10 minutes for your online status to begin showing on the site and in Discord.
+                        </p>
+                    </div>
 
-        <!-- Settings -->
-        <div class="section">
-            <div class="section-title">Settings</div>
-            <div class="checkbox-group">
-                <input type="checkbox" id="autoStartCheckbox">
-                <label for="autoStartCheckbox" class="checkbox-label">Start automatically when computer starts</label>
-            </div>
-            <div class="info">
-                The application runs in the background. Close the window to minimize to system tray.
-            </div>
-            <div class="update-row" style="margin-top: 14px;">
-                <span class="version-text">Version <span id="appVersion">—</span></span>
-                <button type="button" id="checkUpdateBtn" class="secondary" style="width: auto; padding: 6px 12px; margin-top: 0;">Check for updates</button>
-            </div>
-            <div id="updateStatus" class="info" style="margin-top: 6px; display: none;"></div>
-            <div id="updateAvailable" style="display: none; margin-top: 8px;">
-                <button type="button" id="downloadUpdateBtn" style="width: auto;">Download update</button>
-            </div>
+                    <div class="card">
+                        <div class="card-title"><span class="dot discord"></span> Quick status</div>
+                        <div class="status">
+                            <div class="status-indicator" id="discordStatus"></div>
+                            <span class="status-text" id="discordStatusText">Not connected</span>
+                        </div>
+                        <div class="username" id="discordUsername"></div>
+                        <div class="status" style="margin-top: 10px;">
+                            <div class="status-indicator" id="insigniaStatus"></div>
+                            <span class="status-text" id="insigniaStatusText">Not connected</span>
+                        </div>
+                        <div class="username" id="insigniaUsername"></div>
+                        <p class="info" style="margin-top: 8px;">Manage logins in the <strong style="color: var(--text-secondary);">Accounts</strong> tab.</p>
+                    </div>
+                </section>
+
+                <!-- Accounts -->
+                <section id="panel-accounts" class="panel" role="tabpanel" hidden>
+                    <div class="panel-heading">
+                        <h2>Accounts</h2>
+                        <p>Connect Discord and your xb.live (Insignia) account</p>
+                    </div>
+
+                    <div class="accounts-grid">
+                        <div class="card">
+                            <div class="card-title"><span class="dot discord"></span> Discord</div>
+                            <button id="discordLoginBtn" class="btn btn-discord">Login to Discord</button>
+                            <button id="discordLogoutBtn" class="btn btn-secondary" style="display: none; width: 100%; margin-top: 8px;">Logout</button>
+                        </div>
+
+                        <div class="card">
+                            <div class="card-title"><span class="dot xbl"></span> xb.live (Insignia)</div>
+                            <div class="input-group" id="xbAccountSwitcherRow" style="display: none;">
+                                <label for="xbAccountSelect">Active account</label>
+                                <select id="xbAccountSelect"></select>
+                            </div>
+                            <button type="button" id="addAnotherAccountBtn" class="btn btn-secondary" style="display: none; width: 100%; margin-bottom: 12px;">Add another account</button>
+                            <div class="input-group" id="insigniaEmailGroup">
+                                <label for="insigniaEmail">Email</label>
+                                <input type="email" id="insigniaEmail" placeholder="your@email.com" autocomplete="username">
+                            </div>
+                            <div class="input-group" id="insigniaPasswordGroup">
+                                <label for="insigniaPassword">Password</label>
+                                <input type="password" id="insigniaPassword" placeholder="Password" autocomplete="current-password">
+                            </div>
+                            <button id="insigniaLoginBtn" class="btn btn-primary">Login to xb.live</button>
+                            <button id="insigniaLogoutBtn" class="btn btn-secondary" style="display: none; width: 100%; margin-top: 8px;">Logout</button>
+                            <div id="insigniaError" class="error"></div>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Notifications -->
+                <section id="panel-notifications" class="panel" role="tabpanel" hidden>
+                    <div class="panel-heading">
+                        <h2>Alerts</h2>
+                        <p>Desktop notifications for friends, lobbies, and events</p>
+                    </div>
+
+                    <div class="card">
+                        <p class="info" style="margin-bottom: 12px;">
+                            Uses your system notification settings. Enable notifications for XBL Beacon in macOS / Windows Settings if needed.
+                        </p>
+
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="notifyFriendsCheckbox">
+                            <label for="notifyFriendsCheckbox" class="checkbox-label">Notify when a friend comes online</label>
+                        </div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="notifyAchievementsCheckbox">
+                            <label for="notifyAchievementsCheckbox" class="checkbox-label">Notify when you unlock a new achievement</label>
+                        </div>
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="notifyLobbyAlertsCheckbox">
+                            <label for="notifyLobbyAlertsCheckbox" class="checkbox-label">Notify when a lobby or session goes up</label>
+                        </div>
+
+                        <div class="subheading">Games for lobby / session alerts</div>
+                        <p class="info" style="margin-bottom: 8px;">Only used if lobby alerts are on.</p>
+                        <div id="notifyLobbyGamesList" class="notify-games-list"></div>
+
+                        <div class="checkbox-group" style="margin-top: 14px;">
+                            <input type="checkbox" id="notifyEventsCheckbox">
+                            <label for="notifyEventsCheckbox" class="checkbox-label">Notify before scheduled site events</label>
+                        </div>
+                        <div class="field-row">
+                            <label for="notifyEventMinutesBefore" class="checkbox-label" style="margin: 0;">Remind me</label>
+                            <select id="notifyEventMinutesBefore">
+                                <option value="3">3 minutes before</option>
+                                <option value="5">5 minutes before</option>
+                                <option value="10">10 minutes before</option>
+                                <option value="15">15 minutes before</option>
+                                <option value="30">30 minutes before</option>
+                                <option value="60">1 hour before</option>
+                                <option value="90">1.5 hours before</option>
+                                <option value="120">2 hours before</option>
+                            </select>
+                        </div>
+
+                        <div class="subheading">Games for event reminders</div>
+                        <p class="info" style="margin-bottom: 8px;">Quiet hours below also apply.</p>
+                        <div id="notifyEventGamesList" class="notify-games-list"></div>
+                        <div class="btn-row">
+                            <button type="button" id="refreshNotifyGamesBtn" class="btn btn-secondary">Refresh game lists</button>
+                            <button type="button" id="notifyGamesFilterPlayedBtn" class="btn btn-secondary">Only games I’ve played</button>
+                        </div>
+
+                        <div class="subheading">Quiet hours (local time)</div>
+                        <p class="info" style="margin-bottom: 8px;">Leave empty for all day.</p>
+                        <div id="notifyTimeRangesList" class="notify-ranges-list"></div>
+                        <div class="notify-add-range">
+                            <input type="time" id="notifyRangeStart" value="09:00">
+                            <span style="color: var(--text-muted); font-size: 12px;">to</span>
+                            <input type="time" id="notifyRangeEnd" value="17:00">
+                            <button type="button" id="addNotifyRangeBtn" class="btn btn-secondary">Add range</button>
+                        </div>
+
+                        <div class="subheading">Refresh interval</div>
+                        <label for="notifyPollInterval" class="checkbox-label" style="display: block; margin-bottom: 6px;">Check for updates every</label>
+                        <select id="notifyPollInterval" style="max-width: 220px;">
+                            <option value="1">1 minute</option>
+                            <option value="3">3 minutes</option>
+                            <option value="5">5 minutes</option>
+                            <option value="10">10 minutes</option>
+                            <option value="15">15 minutes</option>
+                        </select>
+                    </div>
+                </section>
+
+                <!-- Analytics -->
+                <section id="panel-analytics" class="panel" role="tabpanel" hidden>
+                    <div class="panel-heading">
+                        <h2>Analytics</h2>
+                        <p>Play time and last played for each game on your xb.live account</p>
+                    </div>
+
+                    <div class="card">
+                        <div class="analytics-toolbar">
+                            <div class="analytics-summary">
+                                <span>Account: <strong id="analyticsUsername">—</strong></span>
+                                <span>Total: <strong id="analyticsTotalTime">—</strong></span>
+                                <span>Games: <strong id="analyticsGameCount">—</strong></span>
+                            </div>
+                            <button type="button" id="refreshAnalyticsBtn" class="btn btn-secondary" style="width: auto; margin: 0; flex-shrink: 0;">Refresh</button>
+                        </div>
+                        <div id="analyticsUpdated" class="analytics-updated"></div>
+                        <div id="analyticsEmpty" class="analytics-empty" style="display: none;"></div>
+                        <div class="analytics-table-wrap">
+                            <table class="analytics-table" id="analyticsTable" hidden>
+                                <thead>
+                                    <tr>
+                                        <th>Game</th>
+                                        <th>Play time</th>
+                                        <th>Last played</th>
+                                    </tr>
+                                </thead>
+                                <tbody id="analyticsTableBody"></tbody>
+                            </table>
+                        </div>
+                    </div>
+                </section>
+
+                <!-- Settings -->
+                <section id="panel-settings" class="panel" role="tabpanel" hidden>
+                    <div class="panel-heading">
+                        <h2>Settings</h2>
+                        <p>Startup behavior and app updates</p>
+                    </div>
+
+                    <div class="card">
+                        <div class="checkbox-group">
+                            <input type="checkbox" id="autoStartCheckbox">
+                            <label for="autoStartCheckbox" class="checkbox-label">Start automatically when computer starts</label>
+                        </div>
+                        <p class="info" style="margin-top: 8px;">
+                            Runs in the background. Close the window to minimize to the system tray.
+                        </p>
+
+                        <div class="update-row">
+                            <span class="version-text">Version <span id="appVersion">—</span></span>
+                            <button type="button" id="checkUpdateBtn" class="btn btn-secondary">Check for updates</button>
+                        </div>
+                        <div id="updateStatus" class="info" style="margin-top: 8px; display: none;"></div>
+                        <div id="updateAvailable" style="display: none; margin-top: 10px;">
+                            <button type="button" id="downloadUpdateBtn" class="btn btn-primary" style="width: auto;">Download update</button>
+                        </div>
+                    </div>
+                </section>
+            </main>
         </div>
     </div>
 
+    <script>
+        (function () {
+            const tabs = document.querySelectorAll('.nav-tab');
+            const panels = document.querySelectorAll('.panel');
+
+            function showPanel(id) {
+                tabs.forEach((t) => {
+                    const on = t.dataset.panel === id;
+                    t.classList.toggle('active', on);
+                    t.setAttribute('aria-selected', on ? 'true' : 'false');
+                });
+                panels.forEach((p) => {
+                    const on = p.id === id;
+                    p.classList.toggle('active', on);
+                    p.hidden = !on;
+                });
+                if (id === 'panel-analytics' && typeof window.refreshPlayTimeAnalytics === 'function') {
+                    window.refreshPlayTimeAnalytics();
+                }
+            }
+
+            tabs.forEach((tab) => {
+                tab.addEventListener('click', () => showPanel(tab.dataset.panel));
+            });
+        })();
+    </script>
     <script src="renderer.js"></script>
 </body>
 </html>
-

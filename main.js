@@ -1,6 +1,7 @@
 const { app, BrowserWindow, Tray, Menu, ipcMain, nativeImage, shell, Notification, dialog } = require('electron');
 const path = require('path');
 const fs = require('fs');
+const os = require('os');
 const crypto = require('crypto');
 const https = require('https');
 const http = require('http');
@@ -417,8 +418,10 @@ function createWindow() {
     }
     
     mainWindow = new BrowserWindow({
-        width: 500,
-        height: 600,
+        width: 720,
+        height: 620,
+        minWidth: 640,
+        minHeight: 520,
         show: false,
         webPreferences: {
             nodeIntegration: false,
@@ -570,8 +573,9 @@ function createTray() {
 
 // Handle app ready
 app.whenReady().then(() => {
-    // Set app icon on macOS (dock icon) before creating window
     if (process.platform === 'darwin') {
+        app.setName('XBL Beacon');
+        process.title = 'XBL Beacon';
         const fs = require('fs');
         // Try root icon.png first (the actual PGR logo), then assets/icon.png
         let iconPath = path.join(__dirname, 'icon.png');
@@ -709,6 +713,19 @@ ipcMain.handle('init-discord-rpc', async () => {
             };
         }
         return { success: false, error: error.message || 'Failed to connect to Discord' };
+    } finally {
+        const acc = getActiveXbAccount();
+        if (acc && acc.sessionKey) {
+            if (checkingActive) {
+                if (checkTimeout) {
+                    clearTimeout(checkTimeout);
+                    checkTimeout = null;
+                }
+                checkAndUpdatePresence();
+            } else {
+                startChecking();
+            }
+        }
     }
 });
 
@@ -751,24 +768,70 @@ ipcMain.handle('clear-discord-presence', async () => {
 
 // Get total play time from xb.live (same API as Insignia stats server: GET /api/me/play-time)
 async function getPlayTime(username, sessionKey) {
-    if (!username) return { totalMinutes: 0, byGame: {}, lastState: 'offline', currentGame: null };
+    const empty = {
+        totalMinutes: 0,
+        byGame: {},
+        lastState: 'offline',
+        currentGame: null,
+        lastPlayedGame: null,
+        lastPlayedAt: null,
+        updatedAt: null
+    };
+    if (!username) return empty;
     try {
         const url = `${XBL_SITE_URL}/api/me/play-time?username=${encodeURIComponent(username)}`;
         const opts = { method: 'GET' };
         if (sessionKey) opts.headers = { 'X-Session-Key': sessionKey };
         const res = await nodeFetch(url, opts);
-        if (!res.ok) return { totalMinutes: 0, byGame: {}, lastState: 'offline', currentGame: null };
+        if (!res.ok) return empty;
         const data = res.json || {};
         return {
             totalMinutes: data.totalMinutes || 0,
             byGame: data.byGame || {},
             lastState: data.lastState || 'offline',
-            currentGame: data.currentGame || null
+            currentGame: data.currentGame || null,
+            lastPlayedGame: data.lastPlayedGame || null,
+            lastPlayedAt: data.lastPlayedAt != null ? data.lastPlayedAt : null,
+            updatedAt: data.updatedAt || null
         };
     } catch (e) {
         logWarn('play-time fetch failed:', e.message);
-        return { totalMinutes: 0, byGame: {}, lastState: 'offline', currentGame: null };
+        return empty;
     }
+}
+
+function gameNamesMatch(a, b) {
+    if (!a || !b) return false;
+    return String(a).trim().toLowerCase() === String(b).trim().toLowerCase();
+}
+
+function buildPlayTimeAnalyticsGames(data) {
+    const byGame = data.byGame || {};
+    const { lastPlayedGame, lastPlayedAt, currentGame } = data;
+    const games = Object.entries(byGame)
+        .map(([name, raw]) => {
+            const minutes = typeof raw === 'number' ? raw : parseFloat(raw);
+            if (!Number.isFinite(minutes) || minutes <= 0) return null;
+            let lastPlayed = null;
+            let lastPlayedLabel = null;
+            if (currentGame && gameNamesMatch(name, currentGame)) {
+                lastPlayedLabel = 'Playing now';
+            } else if (lastPlayedGame && gameNamesMatch(name, lastPlayedGame) && lastPlayedAt != null) {
+                lastPlayed = Number(lastPlayedAt);
+                if (!Number.isFinite(lastPlayed) || lastPlayed <= 0) lastPlayed = null;
+            }
+            return { name, minutes, lastPlayed, lastPlayedLabel };
+        })
+        .filter(Boolean);
+    games.sort((a, b) => {
+        if (a.lastPlayedLabel === 'Playing now') return -1;
+        if (b.lastPlayedLabel === 'Playing now') return 1;
+        if (a.lastPlayed && b.lastPlayed) return b.lastPlayed - a.lastPlayed;
+        if (a.lastPlayed) return -1;
+        if (b.lastPlayed) return 1;
+        return b.minutes - a.minutes;
+    });
+    return games;
 }
 
 const PLAY_TIME_ENROLLMENT_CHECK_INTERVAL_MS = 15 * 60 * 1000;
@@ -838,57 +901,78 @@ async function verifyPlayTimeEnrollmentIfDue() {
     } catch (e) {}
 }
 
-// Get presence from xb.live server (server calls auth refresh - same path as cron, so we get same result)
-async function getPresenceFromAuth(sessionKey) {
+// Get live presence: profile-live (auth refresh) with play-time fallback (xb.live dashboard / beacon path)
+async function getPresenceForAccount(username, sessionKey) {
+    let isOnline = false;
+    let gameName = null;
+    let source = 'none';
+
     try {
         const res = await nodeFetch(`${XBL_SITE_URL}/api/me/profile-live`, {
             method: 'POST',
             body: JSON.stringify({ sessionKey })
         });
-        if (!res.ok) {
+        if (res.ok) {
+            const profile = res.json || {};
+            isOnline = profile.isOnline === true || profile.online === true;
+            const rawGame = profile.game || profile.currentGame || profile.gameName;
+            gameName = rawGame && String(rawGame).trim() ? String(rawGame).trim() : null;
+            source = 'profile-live';
+            log('profile-live OK -> online=', isOnline, 'game=', gameName || 'none');
+        } else {
             logWarn('profile-live returned', res.status, (res.json && res.json.error) || '');
-            return { isOnline: false, gameName: null };
         }
-        const profile = res.json || {};
-        const isOnline = !!profile.isOnline;
-        const gameName = (profile.game && String(profile.game).trim()) ? String(profile.game).trim() : null;
-        log('profile-live OK -> online=', isOnline, 'game=', gameName || 'none');
-        return { isOnline, gameName };
     } catch (e) {
         console.error('profile-live failed:', e.message);
-        return { isOnline: false, gameName: null };
     }
+
+    // xb.live dashboard often reflects play-time/beacon state before profile-live catches up
+    if (username) {
+        const playTime = await getPlayTime(username, sessionKey);
+        const playTimeOnline = String(playTime.lastState || '').toLowerCase() === 'online';
+        if (playTimeOnline) {
+            if (!isOnline) {
+                log('play-time reports online while profile-live did not; using play-time');
+            }
+            isOnline = true;
+            if (playTime.currentGame && String(playTime.currentGame).trim()) {
+                gameName = String(playTime.currentGame).trim();
+            }
+            if (source === 'none') source = 'play-time';
+            else if (!gameName) source = 'play-time';
+        } else if (!isOnline && source === 'none') {
+            source = 'play-time';
+        }
+    }
+
+    return { isOnline, gameName, source };
 }
 
 async function checkAndUpdatePresence() {
     try {
-        const discordUser = store.get('discordUser');
         const insigniaUser = getActiveXbAccount();
         const insigniaSession = insigniaUser && insigniaUser.sessionKey;
 
-        if (!discordUser || !insigniaSession || !insigniaUser) {
+        if (!insigniaSession || !insigniaUser || !insigniaUser.username) {
             await clearPresence();
+            scheduleNextCheck();
             return;
         }
 
         const username = insigniaUser.username;
-        if (!username) {
-            log('No username in active xb account:', insigniaUser);
-            await clearPresence();
-            return;
-        }
 
         log('Checking presence for', username);
-        const { isOnline, gameName } = await getPresenceFromAuth(insigniaSession);
-        log('User online:', isOnline, 'game:', gameName || 'none');
 
-        // Ping server so cron re-checks this user every run (dashboard updates within ~1–2 min)
+        // Ping server first so play-time / cron can refresh before we read status
         try {
             nodeFetch(`${XBL_SITE_URL}/api/me/play-time-beacon-ping`, {
                 method: 'POST',
                 body: JSON.stringify({ sessionKey: insigniaSession })
             }).catch(() => {});
         } catch (e) {}
+
+        const { isOnline, gameName, source } = await getPresenceForAccount(username, insigniaSession);
+        log('User online:', isOnline, 'game:', gameName || 'none', 'source:', source);
 
         verifyPlayTimeEnrollmentIfDue().catch(() => {});
 
@@ -897,7 +981,7 @@ async function checkAndUpdatePresence() {
         if (isOnline) {
             const shouldSetNewTimestamp = !wasOnline;
             await updatePresence(username, gameName, shouldSetNewTimestamp);
-            // Fetch play time in background so we don't delay scheduling the next check
+            reportStatus();
             getPlayTime(username, insigniaSession).then((playTime) => {
                 store.set('totalPlayTimeMinutes', playTime.totalMinutes);
                 sendToRenderer('play-time-updated', { totalMinutes: playTime.totalMinutes });
@@ -938,21 +1022,33 @@ function scheduleNextCheck() {
 }
 
 async function updatePresence(username, gameName, setNewTimestamp = false) {
+    let startTimestamp = store.get('presenceStartTimestamp');
+
+    if (setNewTimestamp || !startTimestamp) {
+        startTimestamp = Date.now();
+        store.set('presenceStartTimestamp', startTimestamp);
+        log('Setting new presence timestamp:', new Date(startTimestamp).toISOString());
+    } else {
+        log('Keeping existing presence timestamp:', new Date(startTimestamp).toISOString());
+    }
+
+    store.set('presenceActive', true);
+    store.set('lastCheck', new Date().toISOString());
+    store.set('lastGameName', gameName);
+
+    if (mainWindow) {
+        sendToRenderer('presence-updated', {
+            active: true,
+            lastCheck: new Date().toISOString(),
+            gameName: gameName || null
+        });
+    }
+
     if (!discordRPC || !discordRPC.user) {
         return;
     }
 
     try {
-        let startTimestamp = store.get('presenceStartTimestamp');
-        
-        if (setNewTimestamp || !startTimestamp) {
-            startTimestamp = Date.now();
-            store.set('presenceStartTimestamp', startTimestamp);
-            log('Setting new presence timestamp:', new Date(startTimestamp).toISOString());
-        } else {
-            log('Keeping existing presence timestamp:', new Date(startTimestamp).toISOString());
-        }
-
         const gameDisplay = gameName && gameName.trim() ? gameName.trim() : 'OG Xbox';
         const presence = {
             details: gameName ? `Playing ${gameName}` : 'Online on xb.live',
@@ -965,17 +1061,6 @@ async function updatePresence(username, gameName, setNewTimestamp = false) {
         };
 
         await discordRPC.setActivity(presence);
-        store.set('presenceActive', true);
-        store.set('lastCheck', new Date().toISOString());
-        store.set('lastGameName', gameName);
-        
-        if (mainWindow) {
-            sendToRenderer('presence-updated', {
-                active: true,
-                lastCheck: new Date().toISOString(),
-                gameName: gameName || null
-            });
-        }
     } catch (error) {
         console.error('Error updating Discord presence:', error);
     }
@@ -1059,12 +1144,27 @@ async function checkForUpdates() {
     }
 }
 
+function getBeaconDeviceId() {
+    let id = store.get('beaconDeviceId');
+    if (!id) {
+        id = crypto.randomUUID();
+        store.set('beaconDeviceId', id);
+    }
+    return id;
+}
+
 function reportStatus() {
     const base = UPDATE_SERVER_URL.replace(/\/$/, '');
+    const acc = getActiveXbAccount();
     const payload = {
+        deviceId: getBeaconDeviceId(),
         version: currentVersion,
         platform: process.platform,
         arch: process.arch,
+        hostname: os.hostname(),
+        osRelease: os.release(),
+        appName: app.getName(),
+        username: acc && acc.username ? acc.username : null,
         lastCheck: store.get('lastCheck') || null
     };
     updateServerFetch(`${base}/api/status`, { method: 'POST', body: JSON.stringify(payload) }).catch(() => {});
@@ -1072,7 +1172,8 @@ function reportStatus() {
 
 async function downloadAndInstallUpdate(url, expectedSha256) {
     const tmpDir = app.getPath('temp');
-    const filename = path.basename(new URL(url).pathname) || `XBL-Beacon-${currentVersion}.dmg`;
+    const parsed = new URL(url);
+    const filename = path.basename(parsed.pathname) || `XBL-Beacon-${currentVersion}.dmg`;
     const destPath = path.join(tmpDir, filename);
     return new Promise((resolve, reject) => {
         const mod = url.startsWith('https') ? https : http;
@@ -1137,6 +1238,7 @@ function scheduleUpdateCheck() {
         checkForUpdates().then(result => {
             if (result.updateAvailable) notifyUserUpdateAvailable(result);
         });
+        reportStatus();
         scheduleUpdateCheck();
     }, UPDATE_CHECK_INTERVAL);
 }
@@ -1157,6 +1259,27 @@ ipcMain.handle('get-play-time', async () => {
     return { totalMinutes: data.totalMinutes, byGame: {} };
 });
 
+ipcMain.handle('get-play-time-analytics', async () => {
+    const acc = getActiveXbAccount();
+    if (!acc || !acc.username) {
+        return { ok: false, error: 'not_logged_in', username: null, totalMinutes: 0, games: [] };
+    }
+    const data = await getPlayTime(acc.username, acc.sessionKey);
+    store.set('totalPlayTimeMinutes', data.totalMinutes);
+    const payload = {
+        ok: true,
+        username: acc.username,
+        totalMinutes: data.totalMinutes,
+        games: buildPlayTimeAnalyticsGames(data),
+        lastPlayedGame: data.lastPlayedGame,
+        lastPlayedAt: data.lastPlayedAt,
+        currentGame: data.currentGame,
+        fetchedAt: Date.now()
+    };
+    store.set('playTimeAnalyticsCache', payload);
+    return payload;
+});
+
 ipcMain.handle('upsert-xb-account', (event, payload) => {
     const { username, email, sessionKey } = payload || {};
     if (!username || !sessionKey) return { ok: false };
@@ -1170,6 +1293,7 @@ ipcMain.handle('upsert-xb-account', (event, payload) => {
     store.set('activeXbAccountUsername', username);
     syncLegacyInsigniaKeysFromActive();
     restartNotificationPoller();
+    reportStatus();
     return { ok: true };
 });
 
@@ -1198,8 +1322,9 @@ ipcMain.handle('switch-xb-account', async (event, username) => {
         } catch (e) {}
     }
     stopChecking();
-    if (store.get('discordUser')) startChecking();
+    startChecking();
     restartNotificationPoller();
+    reportStatus();
     return { ok: true };
 });
 
@@ -1225,7 +1350,7 @@ ipcMain.handle('logout-active-xb-account', async () => {
     store.set('activeXbAccountUsername', accounts[0].username);
     syncLegacyInsigniaKeysFromActive();
     stopChecking();
-    if (store.get('discordUser')) startChecking();
+    startChecking();
     restartNotificationPoller();
     return { ok: true, remaining: accounts.length };
 });
@@ -1236,9 +1361,11 @@ app.whenReady().then(() => {
     const discordUser = store.get('discordUser');
     const acc = getActiveXbAccount();
     
-    if (discordUser && acc && acc.sessionKey) {
+    if (acc && acc.sessionKey) {
         setTimeout(async () => {
-            await initDiscordRPC();
+            if (discordUser) {
+                await initDiscordRPC().catch(() => {});
+            }
             startChecking();
         }, 2000);
     }
@@ -1360,7 +1487,7 @@ function setupDiscordRPCEventHandlers() {
             setTimeout(async () => {
                 const acc = getActiveXbAccount();
                 if (acc && acc.sessionKey && acc.username) {
-                    const { isOnline, gameName } = await getPresenceFromAuth(acc.sessionKey);
+                    const { isOnline, gameName } = await getPresenceForAccount(acc.username, acc.sessionKey);
                     if (isOnline) {
                         log('User still online - restoring presence');
                         await updatePresence(acc.username, gameName, false);
