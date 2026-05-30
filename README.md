@@ -6,6 +6,8 @@ A desktop app that updates your **Discord Rich Presence** when you're online on 
 
 <img width="524" height="455" alt="Screenshot 2026-05-29 193437" src="https://github.com/user-attachments/assets/40014089-e864-4542-a862-78bba4f6ca19" />
 
+--
+
 <img width="277" height="204" alt="Screenshot 2026-02-22 at 5 13 37 PM" src="https://github.com/user-attachments/assets/60895380-6ebf-42c4-b71c-f7710f50e8e2" />
 
 ## Features
